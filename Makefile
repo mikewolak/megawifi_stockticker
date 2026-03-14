@@ -33,6 +33,12 @@ CFLAGS += -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-paramete
 CFLAGS += -fno-builtin -ffunction-sections -fdata-sections -fms-extensions
 CFLAGS += $(INCS)
 
+# Optional: inject Finnhub API token at build time:
+#   make FINNHUB_TOKEN=xyz
+ifdef FINNHUB_TOKEN
+CFLAGS += -DFINNHUB_TOKEN=\"$(FINNHUB_TOKEN)\"
+endif
+
 AFLAGS  = $(CFLAGS) -x assembler-with-cpp -Wa,--register-prefix-optional,--bitwise-or
 
 LDFLAGS = -m68000 -n -T $(GDK)/md.ld -nostdlib -fno-lto

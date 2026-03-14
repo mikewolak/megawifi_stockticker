@@ -1,368 +1,459 @@
 /*
- * stock_ticker.c  —  Sega Genesis ORCL debug harness using SGDK + MegaWiFi
+ * stock_ticker.c
+ * Sega Genesis stock ticker using SGDK + MegaWiFi ESP32-C3
  *
- * Single stock (ORCL), full screen debug log.
- * Build: see ../Makefile
+ * Displays scrolling ticker tape on plane B, static prices on plane A.
+ * Polls Finnhub /quote endpoint over HTTPS every ~15 seconds (round-robin).
+ *
+ * Build: SGDK with mw-api linked in. Set MW_BUFLEN to at least 512.
+ *
+ * HTTPS NOTE: Finnhub uses TLS. To enable server certificate verification,
+ * call mw_http_cert_set() once with the Finnhub CA certificate (PEM format).
+ * Without it the ESP32 firmware may accept any cert (depends on fw config).
+ * Get the cert hash with:  openssl x509 -hash -in finnhub_ca.pem -noout
  */
 
 #include <genesis.h>
+#include <task.h>
+#include <string.h>
+#include "ext/mw/megawifi.h"
+/* no stdlib.h available in SGDK headers; provide minimal prototypes */
+long atol(const char *nptr);
+
+static char *find_char(const char *s, char c)
+{
+    while (*s) { if (*s == c) return (char*)s; s++; }
+    return NULL;
+}
+
+static const char *find_substr(const char *hay, const char *needle)
+{
+    if (!*needle) return hay;
+    while (*hay) {
+        const char *h = hay;
+        const char *n = needle;
+        while (*h && *n && (*h == *n)) { h++; n++; }
+        if (*n == '\0') return hay;
+        hay++;
+    }
+    return NULL;
+}
 
 /* -------------------------------------------------------------------------
  * Config
  * ---------------------------------------------------------------------- */
 #define MS_TO_FRAMES(ms)    ((((ms) * 60 / 500) + 1) / 2)
 #define FPS                 60
-#define UPDATE_FRAMES       (FPS * 1)   /* update clock once per second */
-
-#define API_HOST  "https://finnhub.io"  /* kept for reference */
-#define API_GA_ENDPOINT "https://finnhub.io/api/v1" /* kept for reference */
-#define API_TOKEN "d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30" /* kept for reference */
-
-/* Central Time base offset (standard). DST handled in code. */
-#define TZ_CENTRAL_STD   (-6)
-#define TZ_CENTRAL_DST   (-5)
-
-/* Screen layout:
- *  Row  0 : title + build# + clock (CST)
- *  Row  1 : MW version / status
- *  Row  2 : WiFi / time sync status
- *  Row  3 : separator line
- *  Rows 4-27 : timezone table + compact log
- */
-#define LOG_TOP   18
-#define LOG_ROWS  10   /* compact log */
-#define LOG_COLS  39
+#define AP_SLOT             0               /* WiFi config slot              */
+#define AP_SSID             "YourSSID"
+#define AP_PASS             "YourPassword"
+#define UPDATE_FRAMES       (FPS * 5)       /* poll each ticker ~5 s        */
+#define MAX_TICKERS         6
+#define TICKER_SCROLL_SPEED 1               /* pixels per frame              */
+#ifndef FINNHUB_TOKEN
+#define FINNHUB_TOKEN   "REPLACE_WITH_YOUR_TOKEN"
+#warning "FINNHUB_TOKEN not defined; using placeholder will fail authentication"
+#endif
+#define FINNHUB_URL_FMT "https://finnhub.io/api/v1/quote?symbol=%s&token=%s"
 
 /* -------------------------------------------------------------------------
- * Command buffer
- * ---------------------------------------------------------------------- */
-static char cmd_buf[MW_BUFLEN] __attribute__((aligned(2)));
-
-/* -------------------------------------------------------------------------
- * Clock
- * ---------------------------------------------------------------------- */
-static uint32_t epoch_utc    = 0;
-static u16      clock_frames = 0;
-static bool     have_time    = FALSE;
-static bool     dt_ok_last   = FALSE;
-
-static int8_t current_ct_offset(uint32_t epoch);
-
-static void clock_draw(void)
-{
-    char h24[9] = "--:--:--";
-    char h12[9] = "--:-- --";
-
-    if (have_time) {
-        int8_t ct_offset = current_ct_offset(epoch_utc);
-        int32_t s = (int32_t)(epoch_utc % 86400UL) + (ct_offset * 3600);
-        if (s < 0) s += 86400;
-        uint8_t hh = (uint8_t)(s / 3600);
-        uint8_t mm = (uint8_t)((s / 60) % 60);
-        uint8_t ss = (uint8_t)(s % 60);
-        sprintf(h24, "%02u:%02u:%02u", hh, mm, ss);
-        uint8_t h12v = hh % 12; if (h12v == 0) h12v = 12;
-        sprintf(h12, "%2u:%02u %s", h12v, mm, (hh >= 12) ? "PM" : "AM");
-    }
-
-    VDP_setTextPalette(PAL1);  /* green: call attention to CST 12h */
-    VDP_drawText(h12, 22, 0);
-    VDP_setTextPalette(PAL0);  /* white: neutral info */
-    VDP_drawText(h24, 31, 0);
-}
-
-/* -------------------------------------------------------------------------
- * Debug log — 22 rows, newest at bottom, scrolls up when full
- * ---------------------------------------------------------------------- */
-static char log_buf[LOG_ROWS][LOG_COLS + 1];
-static u8   log_next = 0;   /* next row to write (0..LOG_ROWS-1) */
-static bool log_full = FALSE;
-
-static void log_redraw(void)
-{
-    u8 i;
-    for (i = 0; i < LOG_ROWS; i++) {
-        u8 src = log_full ? (u8)((log_next + i) % LOG_ROWS) : i;
-        VDP_drawText(log_buf[src], 0, LOG_TOP + i);
-    }
-}
-
-static void log_print(const char *msg)
-{
-    u8 i;
-    /* Copy msg, pad with spaces to LOG_COLS */
-    for (i = 0; i < LOG_COLS && msg[i]; i++) log_buf[log_next][i] = msg[i];
-    for (; i < LOG_COLS; i++) log_buf[log_next][i] = ' ';
-    log_buf[log_next][LOG_COLS] = '\0';
-
-    log_next++;
-    if (log_next >= LOG_ROWS) { log_next = 0; log_full = TRUE; }
-
-    log_redraw();
-}
-
-/* Formatted log helper — up to LOG_COLS chars */
-#define LOG(...) do { char _lb[LOG_COLS+1]; sprintf(_lb, __VA_ARGS__); log_print(_lb); } while(0)
-
-/* -------------------------------------------------------------------------
- * Timezone table
+ * Ticker data
+ * Prices stored as raw cents (s32) to avoid fix16 overflow on high-price
+ * stocks (fix16 is a 10.6 signed 16-bit type, max integer = 511).
  * ---------------------------------------------------------------------- */
 typedef struct {
-    const char *label;
-    int8_t      offset_hours; /* offset from UTC */
-} tz_entry_t;
+    const char *symbol;
+    s32         price_cents;     /* current price  × 100 */
+    s32         prev_close_cents;/* previous close × 100 */
+    bool        valid;
+} TickerEntry;
 
-static const tz_entry_t tz_table[] = {
-    { "ET",   -5 },  /* adjusted for DST at runtime */
-    { "CT",   -6 },  /* adjusted for DST at runtime */
-    { "MT",   -7 },
-    { "PT",   -8 },
-    { "AK",   -9 },
-    { "HI",  -10 },
-    { "UTC",   0 }
+static TickerEntry tickers[MAX_TICKERS] = {
+    { "ORCL", 0, 0, false },
+    { "NVDA", 0, 0, false },
+    { "AMZN", 0, 0, false },
+    { "IBM",  0, 0, false },
+    { "MSFT", 0, 0, false },
+    { "GOOGL",0, 0, false },
 };
 
-/* Palette selection: PAL0=white (info), PAL1=green (callouts), PAL2=reserved red, PAL3=blue (warnings) */
-static const u8 tz_palette[] = { PAL0 /*ET*/, PAL1 /*CT*/, PAL0 /*MT*/, PAL0 /*PT*/, PAL0 /*AK*/, PAL0 /*HI*/, PAL1 /*UTC*/ };
+/* -------------------------------------------------------------------------
+ * Scrolling marquee state — double-buffered to avoid partial reads
+ * ---------------------------------------------------------------------- */
+static char  marquee_buf[2][256]; /* ping-pong buffers                     */
+static u8    marquee_read_idx = 0;/* main loop always reads from this index */
+static volatile bool marquee_pending = false; /* new data ready to swap in  */
+static u16   scroll_x = 0;
 
-/* Date helpers (from Howard Hinnant algorithms, reduced) */
-typedef long long i64;
+/* -------------------------------------------------------------------------
+ * MegaWiFi shared command buffer (reused for all commands)
+ * ---------------------------------------------------------------------- */
+static uint16_t cmd_buf[MW_BUFLEN/2];
 
-static i64 days_from_civil(int y, unsigned m, unsigned d)
+/* Finnhub server root CA (GTS Root R4, hash a3418fda) */
+static const char finnhub_ca_pem[] =
+"-----BEGIN CERTIFICATE-----\n"
+"MIIDejCCAmKgAwIBAgIQf+UwvzMTQ77dghYQST2KGzANBgkqhkiG9w0BAQsFADBX\n"
+"MQswCQYDVQQGEwJCRTEZMBcGA1UEChMQR2xvYmFsU2lnbiBudi1zYTEQMA4GA1UE\n"
+"CxMHUm9vdCBDQTEbMBkGA1UEAxMSR2xvYmFsU2lnbiBSb290IENBMB4XDTIzMTEx\n"
+"NTAzNDMyMVoXDTI4MDEyODAwMDA0MlowRzELMAkGA1UEBhMCVVMxIjAgBgNVBAoT\n"
+"GUdvb2dsZSBUcnVzdCBTZXJ2aWNlcyBMTEMxFDASBgNVBAMTC0dUUyBSb290IFI0\n"
+"MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE83Rzp2iLYK5DuDXFgTB7S0md+8Fhzube\n"
+"Rr1r1WEYNa5A3XP3iZEwWus87oV8okB2O6nGuEfYKueSkWpz6bFyOZ8pn6KY019e\n"
+"WIZlD6GEZQbR3IvJx3PIjGov5cSr0R2Ko4H/MIH8MA4GA1UdDwEB/wQEAwIBhjAd\n"
+"BgNVHSUEFjAUBggrBgEFBQcDAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zAd\n"
+"BgNVHQ4EFgQUgEzW63T/STaj1dj8tT7FavCUHYwwHwYDVR0jBBgwFoAUYHtmGkUN\n"
+"l8qJUC99BM00qP/8/UswNgYIKwYBBQUHAQEEKjAoMCYGCCsGAQUFBzAChhpodHRw\n"
+"Oi8vaS5wa2kuZ29vZy9nc3IxLmNydDAtBgNVHR8EJjAkMCKgIKAehhxodHRwOi8v\n"
+"Yy5wa2kuZ29vZy9yL2dzcjEuY3JsMBMGA1UdIAQMMAowCAYGZ4EMAQIBMA0GCSqG\n"
+"SIb3DQEBCwUAA4IBAQAYQrsPBtYDh5bjP2OBDwmkoWhIDDkic574y04tfzHpn+cJ\n"
+"odI2D4SseesQ6bDrarZ7C30ddLibZatoKiws3UL9xnELz4ct92vID24FfVbiI1hY\n"
+"+SW6FoVHkNeWIP0GCbaM4C6uVdF5dTUsMVs/ZbzNnIdCp5Gxmx5ejvEau8otR/Cs\n"
+"kGN+hr/W5GvT1tMBjgWKZ1i4//emhA1JG1BbPzoLJQvyEotc03lXjTaCzv8mEbep\n"
+"8RqZ7a2CPsgRbuvTPBwcOMBBmuFeU88+FSBX6+7iP0il8b4Z0QFqIwwMHfs/L6K1\n"
+"vepuoxtGzi4CZ68zJpiq1UvSqTbFJjtbD4seiMHl\n"
+"-----END CERTIFICATE-----\n";
+
+static void ensure_finnhub_cert(void)
 {
-    y -= m <= 2;
-    const int era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = (unsigned)(y - era * 400);
-    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return era * 146097 + (int)doe - 719468;
+    /* Install GTS Root R4 if not already present on the module */
+    uint32_t hash = mw_http_cert_query();
+    if (hash != 0xa3418fda) {
+        mw_http_cert_set(0xa3418fda, finnhub_ca_pem, strlen(finnhub_ca_pem));
+    }
 }
 
-static void civil_from_days(i64 z, int *y, int *m, int *d)
+/* -------------------------------------------------------------------------
+ * Minimal JSON number parser: returns value * 100 (cents) for the field
+ * named key (e.g. "\"c\"" or "\"pc\""). Returns 0x7FFFFFFF on failure.
+ * ---------------------------------------------------------------------- */
+static s32 parse_json_price_cents(const char *body, const char *key)
 {
-    z += 719468;
-    const int era = (z >= 0 ? z : z - 146096) / 146097;
-    const unsigned doe = (unsigned)(z - era * 146097);
-    const unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
-    const unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);
-    const unsigned mp  = (5*doy + 2)/153;
-    const unsigned dd  = doy - (153*mp+2)/5 + 1;
-    const unsigned mm  = mp + (mp < 10 ? 3 : -9);
-    const int yy = (int)(yoe) + era*400 + (mm <= 2);
-    *y = yy; *m = (int)mm; *d = (int)dd;
+    const char *p = find_substr(body, key);
+    if (!p) return 0x7FFFFFFF;
+    p = find_char(p, ':');
+    if (!p) return 0x7FFFFFFF;
+    p++;
+    while (*p == ' ') p++;
+    int sign = 1;
+    if (*p == '-') { sign = -1; p++; }
+    long ipart = 0;
+    while (*p >= '0' && *p <= '9') { ipart = ipart * 10 + (*p - '0'); p++; }
+    long frac = 0; int fdig = 0;
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9' && fdig < 2) { frac = frac * 10 + (*p - '0'); fdig++; p++; }
+        while (*p >= '0' && *p <= '9') p++; /* skip remaining decimals */
+    }
+    if (fdig == 1) frac *= 10;
+    return sign * (s32)(ipart * 100 + frac);
 }
-
-static int weekday_from_days(i64 z)
+/* -------------------------------------------------------------------------
+ * fetch_quote_https()
+ * Uses MegaWiFi HTTP client to call Finnhub /quote over HTTPS.
+ * ---------------------------------------------------------------------- */
+static void fetch_quote_https(u8 idx)
 {
-    /* 1970-01-01 was Thursday (4) using 0=Sunday */
-    return (int)((z + 4) % 7 + 7) % 7;
-}
+    uint8_t ch = MW_HTTP_CH;
+    enum mw_err err;
+    int16_t recv_len;
+    uint32_t content_len = 0;
+    char url[160];
+    const char *sym = tickers[idx].symbol;
 
-static int is_us_dst(uint32_t epoch)
-{
-    /* Compute DST bounds in UTC for the given year */
-    int y, m, d;
-    civil_from_days(epoch / 86400, &y, &m, &d);
+    ensure_finnhub_cert();
 
-    /* March second Sunday at 08:00 UTC (2am CST) */
-    int w_march1 = weekday_from_days(days_from_civil(y, 3, 1));
-    int first_sun = (w_march1 == 0) ? 1 : (8 - w_march1);
-    int second_sun = first_sun + 7;
-    i64 start_days = days_from_civil(y, 3, second_sun);
-    uint32_t dst_start = (uint32_t)(start_days * 86400LL + 8 * 3600);
+    mw_http_cleanup(); /* reset any previous session */
 
-    /* November first Sunday at 07:00 UTC (2am CDT) */
-    int w_nov1 = weekday_from_days(days_from_civil(y, 11, 1));
-    int first_sun_nov = (w_nov1 == 0) ? 1 : (8 - w_nov1);
-    i64 end_days = days_from_civil(y, 11, first_sun_nov);
-    uint32_t dst_end = (uint32_t)(end_days * 86400LL + 7 * 3600);
+    sprintf(url, FINNHUB_URL_FMT, sym, FINNHUB_TOKEN);
 
-    return (epoch >= dst_start && epoch < dst_end);
-}
+    err = mw_http_url_set(url);
+    { char buf[32]; sprintf(buf, "url err=%d           ", (int)err); VDP_drawText(buf, 0, 20); }
+    if (err) return;
 
-static int8_t current_ct_offset(uint32_t epoch)
-{
-    return is_us_dst(epoch) ? TZ_CENTRAL_DST : TZ_CENTRAL_STD;
-}
+    err = mw_http_method_set(MW_HTTP_METHOD_GET);
+    { char buf[32]; sprintf(buf, "meth err=%d          ", (int)err); VDP_drawText(buf, 0, 21); }
+    if (err) return;
 
-static void draw_timezones(void)
-{
-    u8 row = 4;
-    char line[40];
-    u32 base = epoch_utc;
+    mw_http_header_add("Accept", "application/json");
 
-    if (!base) {
-        VDP_drawText("Waiting for NTP sync...", 4, row);
+    err = mw_http_open(0);
+    { char buf[32]; sprintf(buf, "open err=%d          ", (int)err); VDP_drawText(buf, 0, 22); }
+    if (err) return;
+
+    int16_t status = mw_http_finish(&content_len, MS_TO_FRAMES(12000));
+    { char buf[32]; sprintf(buf, "finish=%d len=%ld    ", (int)status, (long)content_len); VDP_drawText(buf, 0, 22); }
+    if (status < 200 || status >= 300 || content_len == 0) {
+        mw_http_cleanup();
         return;
     }
 
-    int8_t ct_offset = current_ct_offset(base);
+    recv_len = (content_len < (uint32_t)(MW_BUFLEN - 2)) ? (int16_t)content_len : (int16_t)(MW_BUFLEN - 2);
+    err = mw_recv_sync(&ch, (char*)cmd_buf, &recv_len, MS_TO_FRAMES(12000));
+    mw_http_cleanup();
+    { char buf[32]; sprintf(buf, "recv err=%d len=%d   ", (int)err, (int)recv_len); VDP_drawText(buf, 0, 23); }
+    if (err || recv_len <= 0) return;
+    ((char*)cmd_buf)[recv_len] = '\0';
 
-    for (u8 i = 0; i < sizeof(tz_table)/sizeof(tz_table[0]); i++) {
-        int8_t offset = tz_table[i].offset_hours;
-        if (!strcmp(tz_table[i].label, "CT")) offset = ct_offset;
-        if (!strcmp(tz_table[i].label, "ET")) offset = ct_offset - 1; /* ET follows US DST too */
-        int32_t t = (int32_t)base + offset * 3600;
-        t %= 86400;
-        if (t < 0) t += 86400;
-        uint8_t h = (uint8_t)(t / 3600);
-        uint8_t m = (uint8_t)((t / 60) % 60);
-        uint8_t s = (uint8_t)(t % 60);
-        uint8_t h12 = h % 12; if (h12 == 0) h12 = 12;
-        sprintf(line, "%-3s %02u:%02u:%02u  %2u:%02u %s",
-                tz_table[i].label, h, m, s,
-                h12, m, (h >= 12) ? "PM" : "AM");
-        VDP_setTextPalette(tz_palette[i]);
-        VDP_drawText(line, 0, row + i);
-    }
-    VDP_setTextPalette(PAL0);
+    s32 price = parse_json_price_cents((char*)cmd_buf, "\"c\"");
+    s32 prev  = parse_json_price_cents((char*)cmd_buf, "\"pc\"");
+    if (price == 0x7FFFFFFF || prev == 0x7FFFFFFF) return;
+
+    tickers[idx].price_cents      = price;
+    tickers[idx].prev_close_cents = prev;
+    tickers[idx].valid            = true;
 }
-
-/* JSON quote helpers removed for clock-only build */
-
-/* -------------------------------------------------------------------------
- * idle_tsk
- * ---------------------------------------------------------------------- */
-static void idle_tsk(void)
+static void fetch_quote(u8 idx)
 {
-    while (1) mw_process();
+    fetch_quote_https(idx);
 }
 
 /* -------------------------------------------------------------------------
- * main
+ * rebuild_marquee()
+ * Assembles the scrolling ticker string into the inactive marquee buffer,
+ * then marks it ready for the main loop to swap in.
+ * ---------------------------------------------------------------------- */
+static void rebuild_marquee(void)
+{
+    u8   write_idx = 1 - marquee_read_idx; /* write to inactive buffer */
+    char *p = marquee_buf[write_idx];
+    u8 i;
+
+    for (i = 0; i < MAX_TICKERS; i++) {
+        if (!tickers[i].valid) {
+            p += sprintf(p, " %s:---.- ", tickers[i].symbol);
+            continue;
+        }
+        {
+            s32 price  = tickers[i].price_cents;
+            s32 pc     = tickers[i].prev_close_cents;
+            s32 delta  = price - pc;
+            char sign  = delta >= 0 ? '+' : '-';
+            s32 adelta = delta < 0 ? -delta : delta;
+
+            p += sprintf(p, " %s:$%ld.%02ld(%c%ld.%02ld) ",
+                         tickers[i].symbol,
+                         (long)(price / 100),  (long)(price % 100),
+                         sign,
+                         (long)(adelta / 100), (long)(adelta % 100));
+        }
+    }
+    *p = '\0';
+
+    marquee_pending = true; /* signal main loop to swap buffer */
+}
+
+/* -------------------------------------------------------------------------
+ * update_marquee_tiles()
+ * Writes the active marquee string into plane B tile row 26 and advances
+ * the hardware horizontal scroll register.
+ * ---------------------------------------------------------------------- */
+static void update_marquee_tiles(void)
+{
+    const char *buf;
+    u16 slen;
+    u16 plane_w = 64;
+    u16 row     = 26;
+    u16 col;
+
+    /* swap in new marquee data if ready */
+    if (marquee_pending) {
+        marquee_read_idx = 1 - marquee_read_idx;
+        marquee_pending  = false;
+    }
+
+    buf  = marquee_buf[marquee_read_idx];
+    slen = (u16)strlen(buf);
+    if (!slen) return;
+
+    for (col = 0; col < plane_w; col++) {
+        u8 ch = (u8)buf[col % slen];
+        /* assumes font tiles start at TILE_USER_INDEX, ASCII 0x20 = tile 0 */
+        u16 tile_idx = (ch >= 0x20 && ch <= 0x7E)
+                     ? (TILE_USER_INDEX + (ch - 0x20))
+                     : TILE_USER_INDEX;
+        VDP_setTileMapXY(BG_B,
+            TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, tile_idx),
+            col, row);
+    }
+
+    scroll_x = (scroll_x + TICKER_SCROLL_SPEED) & 0x1FF;
+    VDP_setHorizontalScroll(BG_B, -(s16)scroll_x);
+}
+
+/* -------------------------------------------------------------------------
+ * draw_price_panel()
+ * Redraws the static price list on plane A, rows 2-22.
+ * ---------------------------------------------------------------------- */
+static void draw_price_panel(void)
+{
+    char line[40];
+    u8 i;
+
+    for (i = 0; i < MAX_TICKERS; i++) {
+        u8 row = 2 + i * 4;
+
+        if (!tickers[i].valid) {
+            sprintf(line, "%-5s  Loading...", tickers[i].symbol);
+            VDP_setTextPalette(PAL0);
+            VDP_drawText(line, 1, row);
+            continue;
+        }
+
+        {
+            s32 price  = tickers[i].price_cents;
+            s32 pc     = tickers[i].prev_close_cents;
+            s32 delta  = price - pc;
+            char sign  = delta >= 0 ? '+' : '-';
+            s32 adelta = delta < 0 ? -delta : delta;
+            /* percent * 100: e.g. 1.23% stored as 123 */
+            s32 pct    = pc ? (adelta * 10000L / pc) : 0;
+
+            /* symbol + price in white */
+            sprintf(line, "%-5s  $%ld.%02ld",
+                    tickers[i].symbol,
+                    (long)(price / 100), (long)(price % 100));
+            VDP_setTextPalette(PAL0);
+            VDP_drawText(line, 1, row);
+
+            /* delta in green (PAL1) or red (PAL2) */
+            sprintf(line, "  %c%ld.%02ld  %c%ld.%02ld%%",
+                    sign, (long)(adelta / 100), (long)(adelta % 100),
+                    sign, (long)(pct / 100),    (long)(pct % 100));
+            VDP_setTextPalette(delta >= 0 ? PAL1 : PAL2);
+            VDP_drawText(line, 14, row);
+            VDP_setTextPalette(PAL0);
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * user_tsk()
+ * Runs mw_process() continuously during idle CPU time between VBlanks.
+ * This is the ONLY work the user task should do — all synchronous MegaWiFi
+ * API calls (mw_http_open, mw_http_finish, mw_recv_sync, etc.) must be
+ * issued from the supervisor task (main), because they internally block
+ * the supervisor via tsk_super_pend() and yield here for mw_process().
+ * ---------------------------------------------------------------------- */
+static void user_tsk(void)
+{
+    while (1) {
+        mw_process();
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * megawifi_init()
+ * Detects module, programs WiFi credentials to slot 0 (DHCP), associates.
+ * ---------------------------------------------------------------------- */
+static bool megawifi_init(void)
+{
+    uint8_t ver_major = 0, ver_minor = 0;
+    char *variant = NULL;
+    /* All-zeros mw_ip_cfg = DHCP (addr/mask/gw/dns all 0.0.0.0) */
+    struct mw_ip_cfg dhcp_cfg = { {0}, {0}, {0}, {0}, {0} };
+    enum mw_err err;
+
+    if (mw_init(cmd_buf, MW_BUFLEN) != MW_ERR_NONE) return false;
+
+    err = mw_detect(&ver_major, &ver_minor, &variant);
+    if (err != MW_ERR_NONE) return false;
+
+    /* Program credentials — stored in ESP32 NVS, persists across resets */
+    err = mw_ap_cfg_set(AP_SLOT, AP_SSID, AP_PASS, MW_PHY_11BGN);
+    if (err != MW_ERR_NONE) return false;
+
+    err = mw_ip_cfg_set(AP_SLOT, &dhcp_cfg);
+    if (err != MW_ERR_NONE) return false;
+
+    err = mw_cfg_save();
+    if (err != MW_ERR_NONE) return false;
+
+    err = mw_ap_assoc(AP_SLOT);
+    if (err != MW_ERR_NONE) return false;
+
+    err = mw_ap_assoc_wait(30 * FPS); /* up to 30 seconds */
+    if (err != MW_ERR_NONE) return false;
+
+    return true;
+}
+
+/* -------------------------------------------------------------------------
+ * main()
  * ---------------------------------------------------------------------- */
 int main(bool hard_reset)
 {
-    u16  frame   = UPDATE_FRAMES;
-    enum mw_err err;
-    uint8_t ver_major = 0, ver_minor = 0;
-    char *variant = NULL;
-    int16_t def_ap;
-    uint32_t dt_bin[2] = {0,0};
-    bool time_synced = FALSE;
+    u16 frame        = UPDATE_FRAMES; /* force first fetch immediately     */
+    u8  ticker_cycle = 0;
 
-    (void)hard_reset;
-
+    /* --- VDP setup ---------------------------------------------------- */
+    VDP_setScreenWidth320();
+    VDP_setPlaneSize(64, 32, TRUE);
+    VDP_setScrollingMode(HSCROLL_LINE, VSCROLL_PLANE);
     VDP_clearPlane(BG_A, TRUE);
     VDP_clearPlane(BG_B, TRUE);
-    VDP_setScrollingMode(HSCROLL_LINE, VSCROLL_PLANE);
 
-    /* Set palette foreground colors used by text (color index 15 of each palette) */
-    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF));   /* PAL0 fg: white */
-    PAL_setColor(31, RGB24_TO_VDPCOLOR(0x00EE00));   /* PAL1 fg: green */
-    PAL_setColor(47, RGB24_TO_VDPCOLOR(0xFF4040));   /* PAL2 fg: red (reserved for errors) */
-    PAL_setColor(63, RGB24_TO_VDPCOLOR(0x40C0FF));   /* PAL3 fg: blue (warnings/info) */
+    /*
+     * Load your ASCII font tiles at TILE_USER_INDEX here, e.g.:
+     *   VDP_loadFont(&font_data, DMA);
+     * The tile at TILE_USER_INDEX + (ch - 0x20) must represent ASCII ch.
+     */
 
-    {
-        char title[41];
-        sprintf(title, "NOC CLOCK #%04d", BUILD_NUM);
-        VDP_setTextPalette(PAL3);
-        VDP_drawText(title, 0, 0);
-        VDP_setTextPalette(PAL0);
+    /* --- Palette setup ------------------------------------------------ */
+    /* PAL0: background black, text white */
+    PAL_setColor(0,  RGB24_TO_VDPCOLOR(0x000000)); /* PAL0 bg  (black)  */
+    PAL_setColor(1,  RGB24_TO_VDPCOLOR(0xFFFFFF)); /* PAL0 fg  (white)  */
+    /* PAL1: gains green — use color index 1 (not 0 which is transparent) */
+    PAL_setColor(16, RGB24_TO_VDPCOLOR(0x000000)); /* PAL1 bg  (black)  */
+    PAL_setColor(17, RGB24_TO_VDPCOLOR(0x00EE00)); /* PAL1 fg  (green)  */
+    /* PAL2: losses red */
+    PAL_setColor(32, RGB24_TO_VDPCOLOR(0x000000)); /* PAL2 bg  (black)  */
+    PAL_setColor(33, RGB24_TO_VDPCOLOR(0xFF4040)); /* PAL2 fg  (red)    */
+
+    /* --- Header ------------------------------------------------------- */
+    VDP_setTextPalette(PAL0);
+    VDP_drawText("  GENESIS STOCK TICKER  ", 4, 0);
+
+    /* --- Wire up user task BEFORE init so mw_process runs during assoc  */
+    TSK_userSet(user_tsk);
+
+    /* --- WiFi init ---------------------------------------------------- */
+    VDP_drawText("Connecting to WiFi...", 4, 14);
+    if (!megawifi_init()) {
+        VDP_drawText("WiFi init FAILED       ", 4, 14);
+        while (1) VDP_waitVSync();
     }
-    VDP_drawText("--:--:--", 31, 0);
-    VDP_drawText("---------------------------------------", 0, 3);
+    VDP_drawText("WiFi connected         ", 4, 14);
 
-    /* zero log buffer */
+    /* --- Initial fetch: get all tickers before entering main loop ----- */
     {
-        u8 i, j;
-        for (i = 0; i < LOG_ROWS; i++) {
-            for (j = 0; j < LOG_COLS; j++) log_buf[i][j] = ' ';
-            log_buf[i][LOG_COLS] = '\0';
+        u8 i;
+        VDP_drawText("Fetching quotes...     ", 4, 15);
+        for (i = 0; i < MAX_TICKERS; i++) {
+            fetch_quote(i);
         }
+        rebuild_marquee();
+        draw_price_panel();
+        VDP_drawText("                       ", 4, 15);
     }
 
-    /* --- MegaWiFi init -------------------------------------------------- */
-    mw_init((u16*)cmd_buf, MW_BUFLEN);
-    TSK_userSet(idle_tsk);
-
-    LOG("MW: detecting...");
-    err = mw_detect(&ver_major, &ver_minor, &variant);
-    if (err != MW_ERR_NONE) {
-        LOG("detect FAILED err=%d", (int)err);
-        while (1) SYS_doVBlankProcess();
-    }
-    LOG("MW: v%d.%d ok", (int)ver_major, (int)ver_minor);
-    {
-        char vl[24];
-        sprintf(vl, "MegaWiFi v%d.%d            ", (int)ver_major, (int)ver_minor);
-        VDP_drawText(vl, 0, 1);
-    }
-
-    /* --- Associate ------------------------------------------------------ */
-    def_ap = mw_def_ap_cfg_get();
-    if (def_ap < 0) def_ap = 0;
-
-    LOG("AP: assoc ap%d...", (int)def_ap);
-    err = mw_ap_assoc((uint8_t)def_ap);
-    if (err) { LOG("assoc FAILED err=%d", (int)err); while (1) SYS_doVBlankProcess(); }
-
-    err = mw_ap_assoc_wait(MS_TO_FRAMES(30000));
-    if (err) { LOG("assoc timeout"); while (1) SYS_doVBlankProcess(); }
-    mw_sleep(3 * 60);
-
-    {
-        char *ap_ssid = NULL;
-        if (mw_ap_cfg_get((uint8_t)def_ap, &ap_ssid, NULL, NULL) == MW_ERR_NONE && ap_ssid)
-            LOG("AP: connected %s", ap_ssid);
-        else
-            LOG("AP: connected");
-    }
-
-    /* --- sys_stat ------------------------------------------------------- */
-    {
-        union mw_msg_sys_stat *ss = mw_sys_stat_get();
-        if (ss) LOG("stat: sys=%d onl=%d cfg=%d",
-                    (int)ss->sys_stat, (int)ss->online, (int)ss->cfg);
-        else    LOG("stat: NULL");
-    }
-
-    /* --- SNTP config (CST with DST) ------------------------------------ */
-    {
-        const char *servers[3] = {"0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org"};
-        err = mw_sntp_cfg_set("CST6CDT", servers);
-        LOG("sntp_cfg: err=%d", (int)err);
-    }
-
-    VDP_drawText("Syncing NTP...                        ", 0, 2);
-
-    /* --- Main loop ------------------------------------------------------ */
+    /* --- Main loop ---------------------------------------------------- */
     while (1) {
-        VDP_waitVSync();
+        VDP_waitVSync(); /* yields to user_tsk for mw_process()           */
 
-        clock_frames++;
-        if (clock_frames >= 60) {
-            clock_frames = 0;
-            if (have_time) { epoch_utc++; clock_draw(); draw_timezones(); }
-        }
+        update_marquee_tiles();
+
+        /* redraw price panel at 2 Hz */
+        if ((frame & 31) == 0)
+            draw_price_panel();
 
         frame++;
         if (frame >= UPDATE_FRAMES) {
             frame = 0;
-            /* Poll time from module once per second */
-            union mw_msg_sys_stat *ss = mw_sys_stat_get();
-            bool dt_ok = ss && ss->dt_ok;
-            if (dt_ok) {
-                char *ts = mw_date_time_get(dt_bin);
-                /* Some firmwares report dt_bin[0]==0 and dt_bin[1]!=0; use whichever is non-zero */
-                uint32_t new_epoch = dt_bin[0] ? dt_bin[0] : dt_bin[1];
-                if (ts && new_epoch) {
-                    epoch_utc = new_epoch;
-                    have_time = TRUE;
-                    if (!time_synced) {
-                        LOG("time synced: %s", ts);
-                        time_synced = TRUE;
-                    }
-                    clock_draw();
-                    draw_timezones();
-                    VDP_setTextPalette(PAL0);
-                    VDP_drawText("Time synced                          ", 0, 2);
-                }
-            } else {
-                dt_ok_last = FALSE;
-                /* Keep last known time ticking; just show status */
-                VDP_drawText("Syncing NTP...                        ", 0, 2);
-            }
+            /* fetch one ticker per cycle (round-robin) */
+            fetch_quote(ticker_cycle);
+            rebuild_marquee();
+            ticker_cycle = (ticker_cycle + 1) % MAX_TICKERS;
         }
     }
 
