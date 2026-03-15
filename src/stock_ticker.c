@@ -57,8 +57,12 @@ static const char *find_substr(const char *hay, const char *needle)
 #define COUNTDOWN_ROW       2               /* "Next Update: Xs" row         */
 #define COUNTDOWN_COL       2               /* under "M" in MegaWifi         */
 #define STATUS_ROW          3               /* error-only status line        */
-#define PRICE_START_ROW     4
-#define PRICE_ROW_STRIDE    4
+/* Prices centered between STATUS_ROW+1 (row 4) and MARQUEE_ROW-1 (row 26).
+ * Available = rows 4-26 = 23 rows. 6 tickers × stride 2 = 11 rows.
+ * Padding each side = (23-11)/2 = 6 → PRICE_START_ROW = 4+6 = 10. */
+#define PRICE_START_ROW     10
+#define PRICE_ROW_STRIDE    2
+#define MARQUEE_ROW         27              /* bottom row of the screen      */
 #ifndef FINNHUB_TOKEN
 #define FINNHUB_TOKEN   "REPLACE_WITH_YOUR_TOKEN"
 #warning "FINNHUB_TOKEN not defined; using placeholder will fail authentication"
@@ -119,6 +123,7 @@ static void draw_googl_symbol(u8 col, u8 row)
  * Scrolling marquee state
  * ---------------------------------------------------------------------- */
 static char  marquee_buf[2][256];
+static u8    marquee_pal_buf[2][256];   /* palette per character */
 static u8    marquee_read_idx = 0;
 static volatile bool marquee_pending = false;
 static u16   scroll_x = 0;
@@ -301,13 +306,19 @@ static void fetch_quote(u8 idx) { fetch_quote_https(idx); }
  * ---------------------------------------------------------------------- */
 static void rebuild_marquee(void)
 {
-    u8   write_idx = 1 - marquee_read_idx;
-    char *p = marquee_buf[write_idx];
-    u8 i;
+    u8    write_idx = 1 - marquee_read_idx;
+    char *p   = marquee_buf[write_idx];
+    u8   *pp  = marquee_pal_buf[write_idx];
+    u8 i, j, n, sym_len, white_len;
 
     for (i = 0; i < MAX_TICKERS; i++) {
+        sym_len   = (u8)strlen(tickers[i].symbol);
+        white_len = 1 + sym_len + 1; /* leading space + symbol + ':' */
+
         if (!tickers[i].valid) {
-            p += sprintf(p, " %s:---.- ", tickers[i].symbol);
+            n = (u8)sprintf(p, " %s:---.- ", tickers[i].symbol);
+            for (j = 0; j < n; j++) pp[j] = PAL0;
+            p += n; pp += n;
             continue;
         }
         {
@@ -316,46 +327,62 @@ static void rebuild_marquee(void)
             s32 delta  = price - pc;
             char sign  = (delta >= 0) ? '+' : '-';
             s32 adelta = (delta < 0) ? -delta : delta;
+            u8  pal    = (delta >= 0) ? PAL1 : PAL2; /* green / red */
 
-            p += sprintf(p, " %s:$%ld.%02ld(%c%ld.%02ld) ",
+            n = (u8)sprintf(p, " %s:$%ld.%02ld(%c%ld.%02ld) ",
                          tickers[i].symbol,
                          (long)(price / 100),  (long)(price % 100),
                          sign,
                          (long)(adelta / 100), (long)(adelta % 100));
+            /* " SYMBOL:" portion = white; price/delta portion = green/red */
+            for (j = 0; j < white_len && j < n; j++) pp[j] = PAL0;
+            for (      ; j < n;                 j++) pp[j] = pal;
+            p += n; pp += n;
         }
     }
-    *p = '\0';
+    *p  = '\0';
+    *pp = PAL0;
     marquee_pending = true;
 }
 
 /* -------------------------------------------------------------------------
- * update_marquee_tiles()
+ * write_marquee_tiles() — rewrites BG_B tilemap from current marquee buffer.
+ * Called only when content changes (new fetch), NOT every frame.
+ * The scroll effect is produced entirely by the scroll register.
  * ---------------------------------------------------------------------- */
-static void update_marquee_tiles(void)
+static void write_marquee_tiles(void)
 {
-    const char *buf;
-    u16 slen;
-    u16 plane_w = 64;
-    u16 row     = 26;
+    const char *buf    = marquee_buf[marquee_read_idx];
+    const u8   *palbuf = marquee_pal_buf[marquee_read_idx];
+    u16 slen = (u16)strlen(buf);
     u16 col;
 
+    if (!slen) return;
+
+    for (col = 0; col < 64; col++) {
+        u16 src      = col % slen;
+        u8  ch       = (u8)buf[src];
+        u8  pal      = palbuf[src];
+        u16 tile_idx = (ch >= 0x20 && ch <= 0x7E)
+                     ? (TILE_FONT_INDEX + (ch - 0x20))
+                     : TILE_FONT_INDEX;
+        VDP_setTileMapXY(BG_B,
+            TILE_ATTR_FULL(pal, FALSE, FALSE, FALSE, tile_idx),
+            col, MARQUEE_ROW);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * update_marquee_scroll() — must be first call after VDP_waitVSync so the
+ * scroll register write lands in VBlank before active display begins.
+ * Rewrites tilemap only when new content is pending (infrequent).
+ * ---------------------------------------------------------------------- */
+static void update_marquee_scroll(void)
+{
     if (marquee_pending) {
         marquee_read_idx = 1 - marquee_read_idx;
         marquee_pending  = false;
-    }
-
-    buf  = marquee_buf[marquee_read_idx];
-    slen = (u16)strlen(buf);
-    if (!slen) return;
-
-    for (col = 0; col < plane_w; col++) {
-        u8 ch = (u8)buf[col % slen];
-        u16 tile_idx = (ch >= 0x20 && ch <= 0x7E)
-                     ? (TILE_USER_INDEX + (ch - 0x20))
-                     : TILE_USER_INDEX;
-        VDP_setTileMapXY(BG_B,
-            TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, tile_idx),
-            col, row);
+        write_marquee_tiles();
     }
 
     scroll_x = (scroll_x + TICKER_SCROLL_SPEED) & 0x1FF;
@@ -376,62 +403,67 @@ static void update_marquee_tiles(void)
  * overwrites any stale characters from a previous shorter value.
  * Called immediately after VDP_waitVSync() for tear-free rendering.
  */
-static void draw_price_panel(void)
+/* Draw a single ticker row — called once per frame (rolling) to avoid stutter. */
+static void draw_price_row(u8 i)
 {
     char pricebuf[16];
     char deltabuf[20];
-    u8 i, n;
+    u8   n;
+    u8   row = PRICE_START_ROW + i * PRICE_ROW_STRIDE;
 
-    for (i = 0; i < MAX_TICKERS; i++) {
-        u8 row = PRICE_START_ROW + i * PRICE_ROW_STRIDE;
-
-        /* symbol: company logo color (GOOGL gets per-letter treatment) */
-        if (i == 5 /* GOOGL */) {
-            draw_googl_symbol(1, row);
-        } else {
-            VDP_setTextPalette(ticker_sym_pal[i]);
-            VDP_drawText(tickers[i].symbol, 1, row);
-        }
-
-        if (!tickers[i].valid) {
-            VDP_setTextPalette(PAL0);
-            VDP_drawText("  Loading...              ", 6, row);
-            continue;
-        }
-
-        {
-            s32 price  = tickers[i].price_cents;
-            s32 pc     = tickers[i].prev_close_cents;
-            s32 delta  = price - pc;
-            char sign  = (delta >= 0) ? '+' : '-';
-            s32 adelta = (delta < 0) ? -delta : delta;
-            s32 pct    = pc ? (adelta * 10000L / pc) : 0;
-
-            /* price — 10 chars fixed: "$XXX.XX   " (trailing spaces clear stale digits) */
-            n = (u8)sprintf(pricebuf, "$%ld.%02ld",
-                            (long)(price / 100), (long)(price % 100));
-            while (n < 10) pricebuf[n++] = ' ';
-            pricebuf[10] = '\0';
-            VDP_setTextPalette(PAL0);
-            VDP_drawText(pricebuf, 6, row);
-
-            /* delta — 14 chars fixed (green/red) */
-            n = (u8)sprintf(deltabuf, " %c%ld.%02ld(%c%ld.%02ld%%)",
-                            sign, (long)(adelta / 100), (long)(adelta % 100),
-                            sign, (long)(pct / 100),    (long)(pct % 100));
-            while (n < 14) deltabuf[n++] = ' ';
-            deltabuf[14] = '\0';
-            if (delta < 0)
-                VDP_setTextPalette(PAL2); /* red   — loss */
-            else
-                VDP_setTextPalette(PAL1); /* green — gain */
-            VDP_drawText(deltabuf, 16, row);
-
-            /* timestamp — 8 chars (white) */
-            VDP_setTextPalette(PAL0);
-            VDP_drawText(tickers[i].timestamp, 30, row);
-        }
+    /* symbol: company logo color (GOOGL gets per-letter treatment) */
+    if (i == 5 /* GOOGL */) {
+        draw_googl_symbol(1, row);
+    } else {
+        VDP_setTextPalette(ticker_sym_pal[i]);
+        VDP_drawText(tickers[i].symbol, 1, row);
     }
+
+    if (!tickers[i].valid) {
+        VDP_setTextPalette(PAL0);
+        VDP_drawText("  Loading...              ", 6, row);
+        return;
+    }
+
+    {
+        s32 price  = tickers[i].price_cents;
+        s32 pc     = tickers[i].prev_close_cents;
+        s32 delta  = price - pc;
+        char sign  = (delta >= 0) ? '+' : '-';
+        s32 adelta = (delta < 0) ? -delta : delta;
+        s32 pct    = pc ? (adelta * 10000L / pc) : 0;
+
+        /* price — 10 chars fixed */
+        n = (u8)sprintf(pricebuf, "$%ld.%02ld",
+                        (long)(price / 100), (long)(price % 100));
+        while (n < 10) pricebuf[n++] = ' ';
+        pricebuf[10] = '\0';
+        VDP_setTextPalette(PAL0);
+        VDP_drawText(pricebuf, 6, row);
+
+        /* delta — 14 chars fixed (green/red) */
+        n = (u8)sprintf(deltabuf, " %c%ld.%02ld(%c%ld.%02ld%%)",
+                        sign, (long)(adelta / 100), (long)(adelta % 100),
+                        sign, (long)(pct / 100),    (long)(pct % 100));
+        while (n < 14) deltabuf[n++] = ' ';
+        deltabuf[14] = '\0';
+        if (delta < 0)
+            VDP_setTextPalette(PAL2); /* red   — loss */
+        else
+            VDP_setTextPalette(PAL1); /* green — gain */
+        VDP_drawText(deltabuf, 16, row);
+
+        /* timestamp — 8 chars (white) */
+        VDP_setTextPalette(PAL0);
+        VDP_drawText(tickers[i].timestamp, 30, row);
+    }
+}
+
+static void draw_price_panel(void)
+{
+    u8 i;
+    for (i = 0; i < MAX_TICKERS; i++)
+        draw_price_row(i);
 }
 
 /* -------------------------------------------------------------------------
@@ -511,7 +543,7 @@ int main(bool hard_reset)
     /* --- VDP setup ---------------------------------------------------- */
     VDP_setScreenWidth320();
     VDP_setPlaneSize(64, 32, TRUE);
-    VDP_setScrollingMode(HSCROLL_LINE, VSCROLL_PLANE);
+    VDP_setScrollingMode(HSCROLL_PLANE, VSCROLL_PLANE);
     VDP_clearPlane(BG_A, TRUE);
     VDP_clearPlane(BG_B, TRUE);
 
@@ -579,14 +611,17 @@ int main(bool hard_reset)
     while (1) {
         VDP_waitVSync();
 
-        /* Price panel first — maximises time in VBlank for VRAM writes */
-        if ((frame & 31) == 0)
-            draw_price_panel();
+        /* Scroll update MUST be first — scroll register write must land in
+         * VBlank before the VDP starts rendering, otherwise the top pixels
+         * of the marquee font glitch (VDP reads stale HSCROLL mid-render). */
+        update_marquee_scroll();
+
+        /* Draw one ticker row per frame (rolling) — spreads VRAM writes,
+         * eliminates the 32-frame stutter from writing all 6 rows at once. */
+        draw_price_row(frame % MAX_TICKERS);
 
         if ((frame % FPS) == 0)
             draw_countdown(frame);
-
-        update_marquee_tiles();
 
         frame++;
         if (frame >= UPDATE_FRAMES) {
