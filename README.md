@@ -76,10 +76,22 @@ The firmware source with full documentation is at:
 | m68k-elf-gcc | in `PATH` (rosco m68k toolchain v13) |
 | Finnhub API token | free account at [finnhub.io](https://finnhub.io) |
 
+### API Token setup
+
+Get a free API key at [finnhub.io/register](https://finnhub.io/register), then:
+
+```sh
+cp TOKEN.md.example TOKEN.md
+# Edit TOKEN.md and replace the placeholder with your key
+```
+
+`TOKEN.md` is git-ignored and never committed. The Makefile reads it automatically.
+You can also pass the token directly: `make FINNHUB_TOKEN=yourkey`
+
 ### Build
 
 ```sh
-make FINNHUB_TOKEN=your_token_here
+make
 ```
 
 Output: `out/stock_ticker.bin`
@@ -89,7 +101,7 @@ The build number auto-increments each compile and is displayed in the title bar.
 ### Run in MAME (optional)
 
 ```sh
-make run FINNHUB_TOKEN=your_token_here
+make run
 ```
 
 ---
@@ -150,16 +162,21 @@ Key defines in `src/stock_ticker.c`:
 ```
 stock_ticker/
 ├── src/
-│   └── stock_ticker.c      Main ROM source (68k/SGDK)
+│   └── stock_ticker.c        Main ROM source (68k/SGDK)
 ├── C3_fw/
-│   ├── mw-fw-rtos.bin      Pre-built HTTPS firmware for ESP32-C3
-│   ├── flash_c3.sh         Flash pre-built firmware
-│   ├── flash_c3_build.sh   Rebuild firmware from source and flash
-│   └── mw_fw_rtos-v1.5.1.tar.xz  Original v1.5.1 firmware (plain HTTP)
+│   ├── flash.sh              Flash all firmware binaries in one command
+│   ├── mw-fw-rtos.bin        HTTPS-capable firmware (~1.1 MB, with Mozilla CA bundle)
+│   ├── bootloader.bin        Matching bootloader
+│   ├── partition-table.bin   Enlarged OTA partitions (1.25 MB each)
+│   └── ota_data_initial.bin  OTA data partition
 ├── out/
-│   └── stock_ticker.bin    Built ROM (git-ignored)
+│   └── stock_ticker.bin      Built ROM (git-ignored)
 ├── Makefile
-├── restore_orig_fw.sh      Rollback to stock v1.5.1 firmware
+├── TOKEN.md.example          Template — copy to TOKEN.md and add your API key
+├── TOKEN.md                  Your Finnhub token (git-ignored, never committed)
+├── restore_orig_fw.sh        Rollback to stock v1.5.1 firmware
+├── BUILD_NOTES.md            Toolchain and build environment notes
+├── FLASH_NOTES.md            Firmware flash address map and procedure
 └── README.md
 ```
 

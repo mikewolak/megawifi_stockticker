@@ -24,10 +24,18 @@ OBJCPY = $(PREFIX)objcopy
 OUT    = out
 SRC    = src
 
+# Finnhub API token — read from TOKEN.md (git-ignored) or passed on the command line.
+# To set up: cp TOKEN.md.example TOKEN.md  then fill in your key.
+# Override at build time: make FINNHUB_TOKEN=yourkey
 TOKEN_FILE := $(CURDIR)/TOKEN.md
-# Auto-load Finnhub token unless provided on the command line
 ifeq ($(strip $(FINNHUB_TOKEN)),)
 FINNHUB_TOKEN := $(shell sed -n 's/^Token:[[:space:]]*//p' $(TOKEN_FILE) 2>/dev/null | head -n1)
+endif
+ifeq ($(strip $(FINNHUB_TOKEN)),)
+$(warning )
+$(warning *** No Finnhub token found. Create TOKEN.md from TOKEN.md.example)
+$(warning *** or run: make FINNHUB_TOKEN=<your_key>)
+$(warning )
 endif
 
 MW_SRC = $(GDK)/src/ext/mw

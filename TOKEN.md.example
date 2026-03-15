@@ -1,0 +1,12 @@
+# Finnhub API Token
+#
+# Copy this file to TOKEN.md and replace the placeholder with your key.
+# TOKEN.md is git-ignored and will never be committed.
+#
+# Get a free API key at: https://finnhub.io/register
+# Free tier allows 60 API calls/minute — sufficient for this project.
+#
+# The Makefile reads this file automatically.
+# You can also override at build time: make FINNHUB_TOKEN=your_key_here
+
+Token: REPLACE_WITH_YOUR_FINNHUB_API_KEY
