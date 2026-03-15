@@ -38,9 +38,16 @@ $(warning *** or run: make FINNHUB_TOKEN=<your_key>)
 $(warning )
 endif
 
-MW_SRC = $(GDK)/src/ext/mw
+MW_SRC   = $(GDK)/src/ext/mw
+RESCOMP  = java -jar $(GDK)/bin/rescomp.jar
+RES_DIR  = res
+RES_SRC  = $(RES_DIR)/nasdaq_bg.res
+RES_PNG  = $(RES_DIR)/nasdaq_bg.png
+RES_S    = $(OUT)/nasdaq_bg.s
+RES_H    = $(OUT)/nasdaq_bg.h
+RES_OBJ  = $(OUT)/nasdaq_bg.o
 
-INCS   = -I$(SRC) -I$(GDK)/inc -I$(GDK)/res
+INCS   = -I$(SRC) -I$(OUT) -I$(GDK)/inc -I$(GDK)/res
 
 CFLAGS  = -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer
 CFLAGS += -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter
@@ -80,7 +87,7 @@ MW_OBJS += $(OUT)/json.o
 # Application object
 APP_OBJ = $(OUT)/stock_ticker.o
 
-ALL_OBJS = $(BOOT_OBJ_SEGA) $(APP_OBJ) $(MW_OBJS)
+ALL_OBJS = $(BOOT_OBJ_SEGA) $(RES_OBJ) $(APP_OBJ) $(MW_OBJS)
 
 ################################################################################
 
@@ -92,7 +99,7 @@ run: all
 	mame genesis -cart $(ROM) -skip_gameinfo -window -nomaximize -resolution 1024x768 -video soft
 
 clean:
-	rm -f $(OUT)/*.o $(OUT)/*.bin $(OUT)/*.out
+	rm -f $(OUT)/*.o $(OUT)/*.bin $(OUT)/*.out $(OUT)/*.s $(OUT)/*.h
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -108,6 +115,19 @@ $(BOOT_BIN_HEAD): $(BOOT_OBJ_HEAD)
 	$(OBJCPY) -O binary $< $@
 
 $(BOOT_OBJ_SEGA): $(GDK)/src/boot/sega.s $(BOOT_BIN_HEAD)
+	$(CC) $(AFLAGS) -c $< -o $@
+
+################################################################################
+# Resources (rescomp — NASDAQ logo background tiles)
+################################################################################
+
+$(RES_PNG): money.png tools/prep_nasdaq.py
+	python3 tools/prep_nasdaq.py $< $@
+
+$(RES_S) $(RES_H): $(RES_SRC) $(RES_PNG)
+	$(RESCOMP) $(RES_SRC) $(RES_S)
+
+$(RES_OBJ): $(RES_S)
 	$(CC) $(AFLAGS) -c $< -o $@
 
 ################################################################################
