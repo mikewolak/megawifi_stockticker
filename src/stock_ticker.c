@@ -85,22 +85,35 @@ static TickerEntry tickers[MAX_TICKERS] = {
     { "GOOGL", 0, 0, false, "" },
 };
 
-/* Company logo palette per ticker:
- *   ORCL  — Oracle red   → PAL3
- *   NVDA  — Nvidia green → PAL1
- *   AMZN  — no orange available → PAL0 (white)
- *   IBM   — no blue available   → PAL0 (white)
- *   MSFT  — no blue available   → PAL0 (white)
- *   GOOGL — no blue available   → PAL0 (white)
- * PAL2 is broken on this hardware (renders as PAL1). */
+/* Per-ticker symbol palette — matched to corporate logo colours.
+ * Four working palettes (all use foreground slot index 15 within palette):
+ *   PAL0 = white   PAL1 = green   PAL2 = red   PAL3 = cyan
+ *
+ * GOOGL gets per-letter multi-colour treatment (see draw_googl_symbol).
+ * Its entry here is PAL0 (unused — draw_price_panel skips it for GOOGL). */
 static const u8 ticker_sym_pal[MAX_TICKERS] = {
-    PAL3, /* ORCL  — red   */
-    PAL1, /* NVDA  — green */
-    PAL0, /* AMZN  — white */
-    PAL0, /* IBM   — white */
-    PAL0, /* MSFT  — white */
-    PAL0, /* GOOGL — white */
+    PAL2, /* ORCL  — Oracle red          */
+    PAL1, /* NVDA  — Nvidia green        */
+    PAL0, /* AMZN  — white (no orange)   */
+    PAL3, /* IBM   — IBM blue/cyan       */
+    PAL3, /* MSFT  — Microsoft cyan      */
+    PAL0, /* GOOGL — multi (see below)   */
 };
+
+/* draw_googl_symbol() — renders "GOOGL" letter-by-letter in Google brand colours.
+ *   G=cyan(PAL3)  O=red(PAL2)  O=white(PAL0)  G=cyan(PAL3)  L=green(PAL1) */
+static void draw_googl_symbol(u8 col, u8 row)
+{
+    static const char letters[] = "GOOGL";
+    static const u8   pals[]    = { PAL3, PAL2, PAL0, PAL3, PAL1 };
+    char ch[2] = { 0, 0 };
+    u8 i;
+    for (i = 0; i < 5; i++) {
+        ch[0] = letters[i];
+        VDP_setTextPalette(pals[i]);
+        VDP_drawText(ch, col + i, row);
+    }
+}
 
 /* -------------------------------------------------------------------------
  * Scrolling marquee state
@@ -137,7 +150,7 @@ static void status_err(const char *msg)
     while (msg[i] && i < 39) { buf[i] = msg[i]; i++; }
     while (i < 40) buf[i++] = ' ';
     buf[40] = '\0';
-    VDP_setTextPalette(PAL3); /* red */
+    VDP_setTextPalette(PAL2); /* red */
     VDP_drawText(buf, 0, STATUS_ROW);
     VDP_setTextPalette(PAL0);
     VDP_waitVSync();
@@ -372,9 +385,13 @@ static void draw_price_panel(void)
     for (i = 0; i < MAX_TICKERS; i++) {
         u8 row = PRICE_START_ROW + i * PRICE_ROW_STRIDE;
 
-        /* symbol: company logo color */
-        VDP_setTextPalette(ticker_sym_pal[i]);
-        VDP_drawText(tickers[i].symbol, 1, row);
+        /* symbol: company logo color (GOOGL gets per-letter treatment) */
+        if (i == 5 /* GOOGL */) {
+            draw_googl_symbol(1, row);
+        } else {
+            VDP_setTextPalette(ticker_sym_pal[i]);
+            VDP_drawText(tickers[i].symbol, 1, row);
+        }
 
         if (!tickers[i].valid) {
             VDP_setTextPalette(PAL0);
@@ -405,7 +422,7 @@ static void draw_price_panel(void)
             while (n < 14) deltabuf[n++] = ' ';
             deltabuf[14] = '\0';
             if (delta < 0)
-                VDP_setTextPalette(PAL3); /* red   — loss */
+                VDP_setTextPalette(PAL2); /* red   — loss */
             else
                 VDP_setTextPalette(PAL1); /* green — gain */
             VDP_drawText(deltabuf, 16, row);
@@ -498,18 +515,19 @@ int main(bool hard_reset)
     VDP_clearPlane(BG_A, TRUE);
     VDP_clearPlane(BG_B, TRUE);
 
-    /* --- Palette setup ------------------------------------------------ */
-    /* PAL0: white text on black */
-    PAL_setColor(0,  RGB24_TO_VDPCOLOR(0x000000));
-    PAL_setColor(1,  RGB24_TO_VDPCOLOR(0xFFFFFF));
-    /* PAL1: green (gains) */
-    PAL_setColor(16, RGB24_TO_VDPCOLOR(0x000000));
-    PAL_setColor(17, RGB24_TO_VDPCOLOR(0x00EE00));
-    /* PAL2: NOT written — broken on this hardware (renders as PAL1 colors) */
-    /* PAL3: red (losses + ORCL symbol) */
-    PAL_setColor(48, RGB24_TO_VDPCOLOR(0x000000));
-    PAL_setColor(49, RGB24_TO_VDPCOLOR(0xFF2020));
-    VDP_waitVSync(); /* ensure all CRAM writes commit before first draw */
+    /* --- Palette setup ------------------------------------------------
+     * SGDK font tiles use pixel value 0xF (15) as the foreground colour.
+     * The foreground slot is therefore colour index 15 within each palette:
+     *   PAL0 = global CRAM[15], PAL1 = CRAM[31], PAL2 = CRAM[47], PAL3 = CRAM[63]
+     * CRAM[0] sets the VDP screen background colour.
+     * All other palette bg entries default to 0 (black) on hardware reset.
+     * ------------------------------------------------------------------ */
+    PAL_setColor(0,  RGB24_TO_VDPCOLOR(0x000000)); /* VDP background = black */
+    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); /* PAL0: white  — prices, neutral text */
+    PAL_setColor(31, RGB24_TO_VDPCOLOR(0x00CC00)); /* PAL1: green  — gains  / NVDA        */
+    PAL_setColor(47, RGB24_TO_VDPCOLOR(0xFF2020)); /* PAL2: red    — losses / ORCL         */
+    PAL_setColor(63, RGB24_TO_VDPCOLOR(0x00AAFF)); /* PAL3: cyan   — IBM / MSFT / GOOGL G  */
+    VDP_waitVSync(); /* flush CRAM writes before first draw */
 
     /* --- Initial title ------------------------------------------------ */
     VDP_setTextPalette(PAL0);
