@@ -5,8 +5,8 @@
 # The mw-api ext/mw sources are compiled directly (not from libmd.a LTO objs).
 #
 # Prerequisites:
-#   ~/sgdk          — SGDK install (libmd.a, inc/, src/)
-#   m68k-elf-gcc    — m68k toolchain in PATH
+#   ~/sgdk         — SGDK install (libmd.a, inc/, src/)
+#   m68k-elf-gcc   — m68k toolchain in PATH (rosco toolchain)
 #
 # Targets:
 #   all    — build out/rom.bin (default)
@@ -15,7 +15,7 @@
 ################################################################################
 
 GDK    = $(HOME)/sgdk
-PREFIX = m68k-elf-
+PREFIX ?= m68k-elf-
 CC     = $(PREFIX)gcc
 AS     = $(PREFIX)as
 LD     = $(PREFIX)ld
@@ -23,6 +23,12 @@ OBJCPY = $(PREFIX)objcopy
 
 OUT    = out
 SRC    = src
+
+TOKEN_FILE := $(CURDIR)/TOKEN.md
+# Auto-load Finnhub token unless provided on the command line
+ifeq ($(strip $(FINNHUB_TOKEN)),)
+FINNHUB_TOKEN := $(shell sed -n 's/^Token:[[:space:]]*//p' $(TOKEN_FILE) 2>/dev/null | head -n1)
+endif
 
 MW_SRC = $(GDK)/src/ext/mw
 
