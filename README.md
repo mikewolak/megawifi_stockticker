@@ -157,12 +157,78 @@ Key defines in `src/stock_ticker.c`:
 
 ---
 
+## Display Freeze Fix — `mw_command()` Draw Hook
+
+### Problem
+
+Every time the ROM fetched a stock quote, the display froze for ~0.5–1.5 seconds
+while waiting for the ESP32-C3 to complete the HTTPS round-trip. The root cause was
+in `megawifi.c` (`mw_command()`):
+
+```c
+/* original — blocks the super task for the entire HTTP wait */
+TSK_superPend(timeout_frames);
+```
+
+`TSK_superPend(timeout_frames)` suspends the SGDK super task for the full timeout
+(up to several hundred frames), preventing any VDP writes — including scroll register
+updates and tile redraws — until the response arrived. The result was a visible freeze
+every 10 seconds.
+
+### Fix
+
+`src/megawifi.c` is a local copy of the upstream `megawifi.c` with one change to
+`mw_command()`: instead of one long pend, it loops with a **1-frame pend** and calls
+a registered draw hook each iteration:
+
+```c
+do {
+    tout = TSK_superPend(1);
+    if (mw_draw_hook) mw_draw_hook();
+    frames_left--;
+} while (tout && frames_left > 0);
+```
+
+`stock_ticker.c` registers `fetch_draw_hook()` before WiFi init:
+
+```c
+mw_set_draw_hook(fetch_draw_hook);
+```
+
+The hook updates the marquee scroll and redraws one ticker row per frame:
+
+```c
+static void fetch_draw_hook(void)
+{
+    static u16 hook_frame = 0;
+    update_marquee_scroll();
+    draw_price_row((u8)(hook_frame % MAX_TICKERS));
+    hook_frame++;
+}
+```
+
+> **Note:** `VDP_waitVSync()` is intentionally **not** called inside the hook.
+> `TSK_superPend(1)` is already posted by the VBlank ISR, so the hook fires once
+> per VBlank naturally. Calling `VDP_waitVSync()` from inside the hook is
+> re-entrant into SGDK's task system and causes WiFi init to fail.
+
+### Makefile change
+
+`megawifi.o` now builds from the local copy instead of the SGDK tree:
+
+```makefile
+$(OUT)/megawifi.o: $(SRC)/megawifi.c   # was: $(MW_SRC)/megawifi.c
+```
+
+---
+
 ## Project Structure
 
 ```
 stock_ticker/
 ├── src/
-│   └── stock_ticker.c        Main ROM source (68k/SGDK)
+│   ├── stock_ticker.c        Main ROM source (68k/SGDK)
+│   └── megawifi.c            Local copy of mw-api megawifi.c with draw-hook freeze fix
 ├── C3_fw/
 │   ├── flash.sh              Flash all firmware binaries in one command
 │   ├── mw-fw-rtos.bin        HTTPS-capable firmware (~1.1 MB, with Mozilla CA bundle)
