@@ -62,6 +62,7 @@ static const char *find_substr(const char *hay, const char *needle)
 #define UPDATE_FRAMES       (FPS * 10)
 #define MAX_TICKERS         6
 #define TICKER_SCROLL_SPEED 1
+#define COPYRIGHT_ROW       1               /* copyright / contact line      */
 #define COUNTDOWN_ROW       2               /* "Next Update: Xs" row         */
 #define COUNTDOWN_COL       2               /* under "M" in MegaWifi         */
 #define STATUS_ROW          3               /* error-only status line        */
@@ -97,25 +98,27 @@ static TickerEntry tickers[MAX_TICKERS] = {
 
 /* Per-ticker symbol palette — matched to corporate logo colours.
  * Four working palettes (all use foreground slot index 15 within palette):
- *   PAL0 = white   PAL1 = green   PAL2 = red   PAL3 = cyan
+ *   PAL0 = white   PAL1 = green   PAL2 = red   PAL3 = purple (copyright row)
  *
+ * IBM and MSFT use PAL0 (white) — PAL3 is reserved for the copyright line.
  * GOOGL gets per-letter multi-colour treatment (see draw_googl_symbol).
  * Its entry here is PAL0 (unused — draw_price_panel skips it for GOOGL). */
 static const u8 ticker_sym_pal[MAX_TICKERS] = {
     PAL2, /* ORCL  — Oracle red          */
     PAL1, /* NVDA  — Nvidia green        */
-    PAL0, /* AMZN  — white (no orange)   */
-    PAL3, /* IBM   — IBM blue/cyan       */
-    PAL3, /* MSFT  — Microsoft cyan      */
+    PAL0, /* AMZN  — white               */
+    PAL0, /* IBM   — white               */
+    PAL0, /* MSFT  — white               */
     PAL0, /* GOOGL — multi (see below)   */
 };
 
 /* draw_googl_symbol() — renders "GOOGL" letter-by-letter in Google brand colours.
- *   G=cyan(PAL3)  O=red(PAL2)  O=white(PAL0)  G=cyan(PAL3)  L=green(PAL1) */
+ *   G=white(PAL0)  O=red(PAL2)  O=white(PAL0)  G=white(PAL0)  L=green(PAL1)
+ *   (PAL3 is reserved for the purple copyright line) */
 static void draw_googl_symbol(u8 col, u8 row)
 {
     static const char letters[] = "GOOGL";
-    static const u8   pals[]    = { PAL3, PAL2, PAL0, PAL3, PAL1 };
+    static const u8   pals[]    = { PAL0, PAL2, PAL0, PAL0, PAL1 };
     char ch[2] = { 0, 0 };
     u8 i;
     for (i = 0; i < 5; i++) {
@@ -578,6 +581,9 @@ static void draw_title(void)
             (int)fw_major, (int)fw_minor, fw_variant);
     VDP_setTextPalette(PAL0);
     VDP_drawText(title, 0, 0);
+    VDP_setTextPalette(PAL3);
+    VDP_drawText("(c) 2026 mikewolak@gmail.com epromfoundry.com", 0, COPYRIGHT_ROW);
+    VDP_setTextPalette(PAL0);
 }
 
 /* -------------------------------------------------------------------------
@@ -663,7 +669,7 @@ int main(bool hard_reset)
     PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); /* PAL0: white  — prices, neutral text */
     PAL_setColor(31, RGB24_TO_VDPCOLOR(0x00CC00)); /* PAL1: green  — gains  / NVDA        */
     PAL_setColor(47, RGB24_TO_VDPCOLOR(0xFF2020)); /* PAL2: red    — losses / ORCL         */
-    PAL_setColor(63, RGB24_TO_VDPCOLOR(0x00AAFF)); /* PAL3: cyan   — IBM / MSFT / GOOGL G  */
+    PAL_setColor(63, RGB24_TO_VDPCOLOR(0x9200DB)); /* PAL3: purple — copyright line        */
     VDP_waitVSync(); /* flush CRAM writes before first draw */
 
     /* --- NASDAQ tiled background (enable with -DBCKGND_ON) ------------ */
@@ -674,6 +680,9 @@ int main(bool hard_reset)
     /* --- Initial title ------------------------------------------------ */
     VDP_setTextPalette(PAL0);
     VDP_drawText("[ MegaWifi Stock Ticker ]", 0, 0);
+    VDP_setTextPalette(PAL3);
+    VDP_drawText("(c) 2026 mikewolak@gmail.com epromfoundry.com", 0, COPYRIGHT_ROW);
+    VDP_setTextPalette(PAL0);
 
     /* --- Register draw hook so mw_command() keeps display alive ------- */
     mw_set_draw_hook(fetch_draw_hook);
