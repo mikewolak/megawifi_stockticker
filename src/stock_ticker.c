@@ -269,14 +269,14 @@ done:
         uint32_t dt[2] = {0, 0};
         char *ts = mw_date_time_get(dt);
         /* ts: "WWW MMM DD HH:MM:SS YYYY" — extract HH:MM:SS at offset 11 */
-        if (ts && ts[11] && ts[19]) {
+        if (ts && ts[11] && ts[16]) {
             uint8_t hh = (uint8_t)((ts[11]-'0')*10 + (ts[12]-'0'));
             const char *ampm = (hh >= 12) ? "PM" : "AM";
             if (hh == 0) hh = 12;
             else if (hh > 12) hh -= 12;
-            /* "HH:MM:SS PM\0" = 12 bytes, fits in timestamp[12] */
-            sprintf(tickers[idx].timestamp, "%2d:%c%c:%c%c %s",
-                    (int)hh, ts[14], ts[15], ts[17], ts[18], ampm);
+            /* "HH:MM AM\0" = 9 bytes, fits in timestamp[12] */
+            sprintf(tickers[idx].timestamp, "%2d:%c%c %s",
+                    (int)hh, ts[14], ts[15], ampm);
         }
     }
 }
@@ -352,23 +352,33 @@ static void update_marquee_tiles(void)
 /* -------------------------------------------------------------------------
  * draw_price_panel()
  * ---------------------------------------------------------------------- */
+/* draw_price_panel()
+ * Layout (40-char screen, all columns 0-based):
+ *   col  1- 5  symbol (company color)
+ *   col  6-15  price  "$%-4ld.%02ld  " = 10 chars fixed (white)
+ *   col 16-29  delta  " %c%ld.%02ld(%c%ld.%02ld%%)" padded to 14 (green/red)
+ *   col 30-37  time   "HH:MM xM"  8 chars (white)
+ *
+ * No row-clear: each field is padded to a fixed width so it always
+ * overwrites any stale characters from a previous shorter value.
+ * Called immediately after VDP_waitVSync() for tear-free rendering.
+ */
 static void draw_price_panel(void)
 {
-    char line[40];
-    u8 i;
+    char pricebuf[16];
+    char deltabuf[20];
+    u8 i, n;
 
     for (i = 0; i < MAX_TICKERS; i++) {
         u8 row = PRICE_START_ROW + i * PRICE_ROW_STRIDE;
 
-        /* Clear the full row first to prevent stale character artifacts */
-        VDP_setTextPalette(PAL0);
-        VDP_drawText("                                       ", 1, row);
+        /* symbol: company logo color */
+        VDP_setTextPalette(ticker_sym_pal[i]);
+        VDP_drawText(tickers[i].symbol, 1, row);
 
         if (!tickers[i].valid) {
-            VDP_setTextPalette(ticker_sym_pal[i]);
-            VDP_drawText(tickers[i].symbol, 1, row);
             VDP_setTextPalette(PAL0);
-            VDP_drawText("  Loading...", 6, row);
+            VDP_drawText("  Loading...              ", 6, row);
             continue;
         }
 
@@ -380,30 +390,29 @@ static void draw_price_panel(void)
             s32 adelta = (delta < 0) ? -delta : delta;
             s32 pct    = pc ? (adelta * 10000L / pc) : 0;
 
-            /* symbol: company logo color */
-            VDP_setTextPalette(ticker_sym_pal[i]);
-            VDP_drawText(tickers[i].symbol, 1, row);
-
-            /* price: white */
-            sprintf(line, "  $%ld.%02ld",
-                    (long)(price / 100), (long)(price % 100));
+            /* price — 10 chars fixed: "$XXX.XX   " (trailing spaces clear stale digits) */
+            n = (u8)sprintf(pricebuf, "$%ld.%02ld",
+                            (long)(price / 100), (long)(price % 100));
+            while (n < 10) pricebuf[n++] = ' ';
+            pricebuf[10] = '\0';
             VDP_setTextPalette(PAL0);
-            VDP_drawText(line, 6, row);
+            VDP_drawText(pricebuf, 6, row);
 
-            /* delta: green for gains, red for losses */
-            sprintf(line, "  %c%ld.%02ld  %c%ld.%02ld%%",
-                    sign, (long)(adelta / 100), (long)(adelta % 100),
-                    sign, (long)(pct / 100),    (long)(pct % 100));
+            /* delta — 14 chars fixed (green/red) */
+            n = (u8)sprintf(deltabuf, " %c%ld.%02ld(%c%ld.%02ld%%)",
+                            sign, (long)(adelta / 100), (long)(adelta % 100),
+                            sign, (long)(pct / 100),    (long)(pct % 100));
+            while (n < 14) deltabuf[n++] = ' ';
+            deltabuf[14] = '\0';
             if (delta < 0)
                 VDP_setTextPalette(PAL3); /* red   — loss */
             else
                 VDP_setTextPalette(PAL1); /* green — gain */
-            VDP_drawText(line, 14, row);
+            VDP_drawText(deltabuf, 16, row);
 
-            /* timestamp: white */
-            sprintf(line, "(%s)", tickers[i].timestamp);
+            /* timestamp — 8 chars (white) */
             VDP_setTextPalette(PAL0);
-            VDP_drawText(line, 27, row);
+            VDP_drawText(tickers[i].timestamp, 30, row);
         }
     }
 }
@@ -496,12 +505,11 @@ int main(bool hard_reset)
     /* PAL1: green (gains) */
     PAL_setColor(16, RGB24_TO_VDPCOLOR(0x000000));
     PAL_setColor(17, RGB24_TO_VDPCOLOR(0x00EE00));
-    /* PAL2: unused (broken on this hardware — PAL2 text renders as PAL1) */
-    PAL_setColor(32, RGB24_TO_VDPCOLOR(0x000000));
-    PAL_setColor(33, RGB24_TO_VDPCOLOR(0xFF2020));
-    /* PAL3: red (losses) */
+    /* PAL2: NOT written — broken on this hardware (renders as PAL1 colors) */
+    /* PAL3: red (losses + ORCL symbol) */
     PAL_setColor(48, RGB24_TO_VDPCOLOR(0x000000));
     PAL_setColor(49, RGB24_TO_VDPCOLOR(0xFF2020));
+    VDP_waitVSync(); /* ensure all CRAM writes commit before first draw */
 
     /* --- Initial title ------------------------------------------------ */
     VDP_setTextPalette(PAL0);
@@ -553,13 +561,14 @@ int main(bool hard_reset)
     while (1) {
         VDP_waitVSync();
 
-        update_marquee_tiles();
+        /* Price panel first — maximises time in VBlank for VRAM writes */
+        if ((frame & 31) == 0)
+            draw_price_panel();
 
         if ((frame % FPS) == 0)
             draw_countdown(frame);
 
-        if ((frame & 31) == 0)
-            draw_price_panel();
+        update_marquee_tiles();
 
         frame++;
         if (frame >= UPDATE_FRAMES) {
