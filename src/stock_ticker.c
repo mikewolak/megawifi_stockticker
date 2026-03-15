@@ -62,10 +62,11 @@ static const char *find_substr(const char *hay, const char *needle)
 #define UPDATE_FRAMES       (FPS * 10)
 #define MAX_TICKERS         6
 #define TICKER_SCROLL_SPEED 1
-#define COPYRIGHT_ROW       1               /* copyright / contact line      */
-#define COUNTDOWN_ROW       2               /* "Next Update: Xs" row         */
+#define COPYRIGHT_ROW       2               /* copyright line (blank row 1 above) */
+#define COPYRIGHT_COL       2               /* aligned with "M" in MegaWifi  */
+#define COUNTDOWN_ROW       4               /* "Next Update: Xs" (blank row 3 above) */
 #define COUNTDOWN_COL       2               /* under "M" in MegaWifi         */
-#define STATUS_ROW          3               /* error-only status line        */
+#define STATUS_ROW          5               /* error-only status line        */
 /* Prices centered between STATUS_ROW+1 and MARQUEE_ROW-1, shifted 1 row up. */
 #define PRICE_START_ROW     9
 #define PRICE_ROW_STRIDE    2
@@ -582,7 +583,7 @@ static void draw_title(void)
     VDP_setTextPalette(PAL0);
     VDP_drawText(title, 0, 0);
     VDP_setTextPalette(PAL3);
-    VDP_drawText("(c) 2026 mikewolak@gmail.com epromfoundry.com", 0, COPYRIGHT_ROW);
+    VDP_drawText("(c)2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
     VDP_setTextPalette(PAL0);
 }
 
@@ -681,7 +682,7 @@ int main(bool hard_reset)
     VDP_setTextPalette(PAL0);
     VDP_drawText("[ MegaWifi Stock Ticker ]", 0, 0);
     VDP_setTextPalette(PAL3);
-    VDP_drawText("(c) 2026 mikewolak@gmail.com epromfoundry.com", 0, COPYRIGHT_ROW);
+    VDP_drawText("(c)2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
     VDP_setTextPalette(PAL0);
 
     /* --- Register draw hook so mw_command() keeps display alive ------- */

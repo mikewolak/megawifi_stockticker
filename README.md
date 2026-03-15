@@ -24,6 +24,9 @@ Genesis VDP — no PC required after the cartridge is flashed.
 
 ```
 [ MegaWiFi Stock Ticker v1.5 MegaWiFi ]
+
+  (c)2026 Mike Wolak
+
 Next Update: 8s
 ORCL  $155.23   -1.25(-0.80%)  2:34 PM
 NVDA  $900.44   +1.56(+0.17%)  2:34 PM
