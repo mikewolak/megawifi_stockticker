@@ -134,7 +134,7 @@ $(RES_OBJ): $(RES_S)
 # mw-api sources
 ################################################################################
 
-$(OUT)/megawifi.o: $(MW_SRC)/megawifi.c
+$(OUT)/megawifi.o: $(SRC)/megawifi.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OUT)/lsd.o: $(MW_SRC)/lsd.c
