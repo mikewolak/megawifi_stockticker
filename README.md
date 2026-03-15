@@ -1,45 +1,172 @@
-# MegaWiFi SGDK builds (C3 cart)
+# MegaWiFi Stock Ticker
 
-> Current working setup uses the rosco m68k toolchain at `/Users/MWOLAK/homebrew/Cellar/rosco-m68k-toolchain@13/20241103161658/bin/m68k-elf-rosco-` with SGDK at `~/sgdk`. See `BUILD_NOTES.md` for the repeatable steps. The legacy marsdev-specific commands below are kept for reference only.
+A live stock ticker for the **Sega Genesis / Mega Drive** running on a
+[MegaWiFi](https://gitlab.com/doragasu/mw) ESP32-C3 cartridge. Fetches real-time
+quotes from the [Finnhub](https://finnhub.io) HTTPS API and displays them on the
+Genesis VDP — no PC required after the cartridge is flashed.
 
-Toolchain
-- m68k: /Users/MWOLAK/homebrew/Cellar/rosco-m68k-toolchain@13/20241103161658/bin/m68k-elf-rosco-
-- SGDK: ~/.marsdev/m68k-elf (built via marsdev; contains ext/mw v1.5 API)
-- FINNHUB token: stored in TOKEN.md (auto-injected at build)
+---
 
-Build commands
-- Stock ticker: rm -f out/*.o out/*.bin out/*.out
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -c /Users/MWOLAK/.marsdev/m68k-elf/src/boot/rom_header.c -o out/rom_header.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-objcopy -O binary out/rom_header.o out/rom_header.bin
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -x assembler-with-cpp -Wa,--register-prefix-optional,--bitwise-or -c /Users/MWOLAK/.marsdev/m68k-elf/src/boot/sega.s -o out/sega.o
-Build: 72
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -DBUILD_NUM=$(cat out/build_num) -c src/stock_ticker.c -o out/stock_ticker.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/megawifi.c -o out/megawifi.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/lsd.c -o out/lsd.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/16c550.c -o out/16c550.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -DMODULE_MEGAWIFI=1 -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DFINNHUB_TOKEN=\"d6p5qm1r01qk3chj1a2gd6p5qm1r01qk3chj1a30\" -Wno-unused-function -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/json.c -o out/json.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -m68000 -n -T /Users/MWOLAK/.marsdev/m68k-elf/md.ld -nostdlib -fno-lto -Wl,--gc-sections out/sega.o out/stock_ticker.o out/megawifi.o out/lsd.o out/16c550.o out/json.o /Users/MWOLAK/.marsdev/m68k-elf/lib/libmd.a /Users/MWOLAK/.marsdev/m68k-elf/bin/../lib/gcc/m68k-elf/15.2.0/libgcc.a -o out/stock_ticker.out
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-objcopy -O binary out/stock_ticker.out out/stock_ticker.bin
-ROM: out/stock_ticker.bin
-  - Output: /Users/MWOLAK/MegaWifi/stock_ticker/out/stock_ticker.bin
-- NTP app: rm -f out/*.o out/*.bin out/*.out
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -c /Users/MWOLAK/.marsdev/m68k-elf/src/boot/rom_header.c -o out/rom_header.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-objcopy -O binary out/rom_header.o out/rom_header.bin
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -x assembler-with-cpp -Wa,--register-prefix-optional,--bitwise-or -c /Users/MWOLAK/.marsdev/m68k-elf/src/boot/sega.s -o out/sega.o
-Build: 2
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -DBUILD_NUM=$(cat out/build_num) -c src/megawifi_ntp.c -o out/megawifi_ntp.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/megawifi.c -o out/megawifi.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/lsd.c -o out/lsd.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/16c550.c -o out/16c550.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -DSGDK_GCC -m68000 -O2 -fomit-frame-pointer -Wall -Wextra -Wno-shift-negative-value -Wno-main -Wno-unused-parameter -fno-builtin -ffunction-sections -fdata-sections -fms-extensions -I/Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw -Isrc -I/Users/MWOLAK/.marsdev/m68k-elf/inc -I/Users/MWOLAK/.marsdev/m68k-elf/res -Wno-unused-function -c /Users/MWOLAK/.marsdev/m68k-elf/src/ext/mw/json.c -o out/json.o
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-gcc -m68000 -n -T /Users/MWOLAK/.marsdev/m68k-elf/md.ld -nostdlib -fno-lto -Wl,--gc-sections out/sega.o out/megawifi_ntp.o out/megawifi.o out/lsd.o out/16c550.o out/json.o /Users/MWOLAK/.marsdev/m68k-elf/lib/libmd.a /Users/MWOLAK/.marsdev/m68k-elf/bin/../lib/gcc/m68k-elf/15.2.0/libgcc.a -o out/megawifi_ntp.out
-/Users/MWOLAK/.marsdev/m68k-elf/bin/m68k-elf-objcopy -O binary out/megawifi_ntp.out out/megawifi_ntp.bin
-ROM: out/megawifi_ntp.bin
-  - Output: /Users/MWOLAK/MegaWifi/megawifi_ntp/out/megawifi_ntp.bin
+## Features
 
-Notes
-- Both projects build against SGDK ext/mw (same API as fw v1.5.1) and expect the ESP32-C3 cart firmware v1.5.1 already flashed.
-- The mw-api hello-wifi demo still needs fixes to compile cleanly with the rosco toolchain + SGDK headers (conflicts around SGDK string/memory prototypes). If you want, I can finish a minimal HTTPS demo using the same stock_ticker/NTP build system instead.
+- **Live quotes** for 6 tickers: ORCL, NVDA, AMZN, IBM, MSFT, GOOGL
+- **HTTPS** — TLS handled entirely by the ESP32-C3 firmware using the Mozilla CA bundle (no custom certificate needed)
+- **Color-coded delta**: green for gains (PAL1), red for losses (PAL3); company logo colors for ORCL (red) and NVDA (green)
+- **Timestamp** per quote showing the CST time the price was fetched (12-hour format)
+- **Scrolling marquee** on the background plane with all tickers and prices
+- **Countdown timer** to the next API fetch cycle
+- **Throttled fetches**: one ticker every 10 seconds (6 calls/min — within Finnhub's 60/min free tier limit)
+- **NTP time sync** via `pool.ntp.org`, US Central timezone (`CST6CDT`) with automatic DST
 
+---
 
-codex resume 019ce9cb-b04f-7190-9d94-838f28ca0e3d
+## Display Layout
+
+```
+[ MegaWiFi Stock Ticker v1.5 MegaWiFi ]
+Next Update: 8s
+ORCL  $155.23   -1.25(-0.80%)  2:34 PM
+NVDA  $900.44   +1.56(+0.17%)  2:34 PM
+AMZN  $207.46   -2.01(-0.96%)  2:33 PM
+IBM   $255.10   +0.88(+0.35%)  2:33 PM
+MSFT  $475.55   -3.21(-0.67%)  2:32 PM
+GOOGL $175.22   -1.43(-0.81%)  2:32 PM
+... scrolling marquee ...
+```
+
+Column layout (40-char screen):
+- Col 1–5: Symbol (company color)
+- Col 6–15: Price (white, fixed-width)
+- Col 16–29: Delta and % change (green/red, fixed-width)
+- Col 30–37: Fetch timestamp in CST (white)
+
+---
+
+## Hardware
+
+| Component | Details |
+|-----------|---------|
+| Console | Sega Genesis / Mega Drive (NTSC or PAL) |
+| Cartridge | MegaWiFi ESP32-C3 cart |
+| Firmware | Custom build — `C3_fw/mw-fw-rtos.bin` (see below) |
+
+### ESP32-C3 Firmware
+
+The stock firmware shipped with the cart (`v1.5.1`) uses a plain-HTTP lwIP socket
+client and **cannot do HTTPS**. This repo includes a custom firmware build in
+`C3_fw/` with the following changes:
+
+- `CONFIG_MW_HTTP_USE_ESP=y` — routes HTTP through `esp_http_client` (TLS-capable)
+- `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y` — embeds the full Mozilla CA
+  bundle; required because `finnhub.io` uses a GTS R4 intermediate not present in
+  the common-only bundle
+
+The firmware source with full documentation is at:
+[github.com/mikewolak/mw_fw_rtos_c3](https://github.com/mikewolak/mw_fw_rtos_c3)
+
+---
+
+## Building the ROM
+
+### Prerequisites
+
+| Tool | Location |
+|------|----------|
+| SGDK | `~/sgdk` (with `libmd.a`, `inc/`, `src/`) |
+| m68k-elf-gcc | in `PATH` (rosco m68k toolchain v13) |
+| Finnhub API token | free account at [finnhub.io](https://finnhub.io) |
+
+### Build
+
+```sh
+make FINNHUB_TOKEN=your_token_here
+```
+
+Output: `out/stock_ticker.bin`
+
+The build number auto-increments each compile and is displayed in the title bar.
+
+### Run in MAME (optional)
+
+```sh
+make run FINNHUB_TOKEN=your_token_here
+```
+
+---
+
+## Flashing
+
+### Flash the custom ESP32-C3 firmware (required once)
+
+```sh
+PORT=/dev/cu.usbmodem101 ./C3_fw/flash_c3.sh
+```
+
+This flashes `C3_fw/mw-fw-rtos.bin` (the pre-built HTTPS-capable firmware).
+Power-cycle the cart after flashing.
+
+To rebuild the firmware from source and flash in one step:
+
+```sh
+PORT=/dev/cu.usbmodem101 BAUD=921600 ./C3_fw/flash_c3_build.sh
+```
+
+> **Warning**: The build script intentionally omits `idf.py set-target`. Running
+> `set-target` triggers a full clean that resets `sdkconfig` and loses
+> `CONFIG_MW_HTTP_USE_ESP=y`, producing a smaller (~849 KB) build that cannot do
+> HTTPS. If this happens accidentally, restore with `cp sdkconfig.old sdkconfig`.
+
+### Flash the stock firmware (rollback)
+
+```sh
+PORT=/dev/cu.usbmodem101 ./restore_orig_fw.sh
+```
+
+### Load the ROM
+
+Copy `out/stock_ticker.bin` to your flash cart (Everdrive, Mega EverDrive, etc.)
+and boot the console normally.
+
+---
+
+## Configuration
+
+Key defines in `src/stock_ticker.c`:
+
+| Define | Default | Description |
+|--------|---------|-------------|
+| `AP_SSID` | `"YourSSID"` | WiFi SSID |
+| `AP_PASS` | `"YourPassword"` | WiFi password |
+| `FINNHUB_TOKEN` | *(set at build)* | Finnhub API token |
+| `UPDATE_FRAMES` | `FPS * 10` | Seconds between fetches per ticker |
+| `MAX_TICKERS` | `6` | Number of tickers |
+| `PRICE_START_ROW` | `4` | First ticker tile row |
+| `PRICE_ROW_STRIDE` | `4` | Rows between tickers |
+
+---
+
+## Project Structure
+
+```
+stock_ticker/
+├── src/
+│   └── stock_ticker.c      Main ROM source (68k/SGDK)
+├── C3_fw/
+│   ├── mw-fw-rtos.bin      Pre-built HTTPS firmware for ESP32-C3
+│   ├── flash_c3.sh         Flash pre-built firmware
+│   ├── flash_c3_build.sh   Rebuild firmware from source and flash
+│   └── mw_fw_rtos-v1.5.1.tar.xz  Original v1.5.1 firmware (plain HTTP)
+├── out/
+│   └── stock_ticker.bin    Built ROM (git-ignored)
+├── Makefile
+├── restore_orig_fw.sh      Rollback to stock v1.5.1 firmware
+└── README.md
+```
+
+---
+
+## Related Repositories
+
+- **ESP32-C3 firmware**: [github.com/mikewolak/mw_fw_rtos_c3](https://github.com/mikewolak/mw_fw_rtos_c3)
+- **MegaWiFi upstream**: [gitlab.com/doragasu/mw](https://gitlab.com/doragasu/mw)
+- **SGDK**: [github.com/Stephane-D/SGDK](https://github.com/Stephane-D/SGDK)
