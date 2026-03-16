@@ -39,13 +39,6 @@ $(warning )
 endif
 
 MW_SRC   = $(GDK)/src/ext/mw
-RESCOMP  = java -jar $(GDK)/bin/rescomp.jar
-RES_DIR  = res
-RES_SRC  = $(RES_DIR)/nasdaq_bg.res
-RES_PNG  = $(RES_DIR)/nasdaq_bg.png
-RES_S    = $(OUT)/nasdaq_bg.s
-RES_H    = $(OUT)/nasdaq_bg.h
-RES_OBJ  = $(OUT)/nasdaq_bg.o
 
 INCS   = -I$(SRC) -I$(OUT) -I$(GDK)/inc -I$(GDK)/res
 
@@ -90,7 +83,7 @@ SEARCH_OBJ   = $(OUT)/ticker_search.o
 NASDAQ_S_GEN = $(OUT)/nasdaq_tickers.s
 NASDAQ_OBJ   = $(OUT)/nasdaq_tickers.o
 
-ALL_OBJS = $(BOOT_OBJ_SEGA) $(RES_OBJ) $(APP_OBJ) $(SEARCH_OBJ) $(NASDAQ_OBJ) $(MW_OBJS)
+ALL_OBJS = $(BOOT_OBJ_SEGA) $(APP_OBJ) $(SEARCH_OBJ) $(NASDAQ_OBJ) $(MW_OBJS)
 
 ################################################################################
 
@@ -118,19 +111,6 @@ $(BOOT_BIN_HEAD): $(BOOT_OBJ_HEAD)
 	$(OBJCPY) -O binary $< $@
 
 $(BOOT_OBJ_SEGA): $(GDK)/src/boot/sega.s $(BOOT_BIN_HEAD)
-	$(CC) $(AFLAGS) -c $< -o $@
-
-################################################################################
-# Resources (rescomp — NASDAQ logo background tiles)
-################################################################################
-
-$(RES_PNG): money.png tools/prep_nasdaq.py
-	python3 tools/prep_nasdaq.py $< $@
-
-$(RES_S) $(RES_H): $(RES_SRC) $(RES_PNG)
-	$(RESCOMP) $(RES_SRC) $(RES_S)
-
-$(RES_OBJ): $(RES_S)
 	$(CC) $(AFLAGS) -c $< -o $@
 
 ################################################################################
