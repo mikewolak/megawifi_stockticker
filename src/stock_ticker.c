@@ -518,10 +518,11 @@ static void fetch_draw_hook(void)
 static void format_net_worth(char *buf, s64 total_cents)
 {
     s64 dollars;
-    u32 bil, rem, mil, tho, hun;
+    u32 bil, rem, mil, tho, hun, cents;
 
     if (total_cents < 0) total_cents = 0;
     dollars = total_cents / (s64)100;
+    cents   = (u32)(total_cents % (s64)100);
 
     bil = (u32)(dollars / (s64)1000000000);
     rem = (u32)(dollars % (s64)1000000000);
@@ -530,17 +531,17 @@ static void format_net_worth(char *buf, s64 total_cents)
     hun = rem % 1000;
 
     if (bil > 0)
-        sprintf(buf, "$%lu,%03lu,%03lu,%03lu",
+        sprintf(buf, "$%lu,%03lu,%03lu,%03lu.%02lu",
                 (unsigned long)bil, (unsigned long)mil,
-                (unsigned long)tho, (unsigned long)hun);
+                (unsigned long)tho, (unsigned long)hun, (unsigned long)cents);
     else if (mil > 0)
-        sprintf(buf, "$%lu,%03lu,%03lu",
-                (unsigned long)mil, (unsigned long)tho, (unsigned long)hun);
+        sprintf(buf, "$%lu,%03lu,%03lu.%02lu",
+                (unsigned long)mil, (unsigned long)tho, (unsigned long)hun, (unsigned long)cents);
     else if (tho > 0)
-        sprintf(buf, "$%lu,%03lu",
-                (unsigned long)tho, (unsigned long)hun);
+        sprintf(buf, "$%lu,%03lu.%02lu",
+                (unsigned long)tho, (unsigned long)hun, (unsigned long)cents);
     else
-        sprintf(buf, "$%lu", (unsigned long)hun);
+        sprintf(buf, "$%lu.%02lu", (unsigned long)hun, (unsigned long)cents);
 }
 
 /* -------------------------------------------------------------------------
@@ -549,7 +550,7 @@ static void format_net_worth(char *buf, s64 total_cents)
 static void draw_net_worth(void)
 {
     s64  total_cents = 0;
-    static char amtbuf[20];
+    static char amtbuf[24];
     static char line[42];
     u8   i, used;
 
