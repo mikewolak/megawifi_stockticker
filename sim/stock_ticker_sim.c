@@ -614,8 +614,10 @@ static u8 ts_page_count(void)
 
 static void ts_close(void)
 {
-    u8 i;
+    int r;
+    u8  i;
     ts_active = false;
+    for (r = POP_TOP; r <= POP_BOT; r++) sim_clear_row(r);
     draw_title();
     draw_countdown();
     for (i = 0; i < MAX_TICKERS; i++) draw_price_row(i);
