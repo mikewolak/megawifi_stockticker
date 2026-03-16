@@ -1016,14 +1016,17 @@ int main(bool hard_reset)
             press = joy & ~prev_joy;
             prev_joy = joy;
 
-            /* START: open ticker search for the selected row (or row 0). */
+            /* START: open ticker search for the selected row (or row 0).
+             * Use if/else so the same press that opens the popup is NOT
+             * also processed by ticker_search_frame() — that would close
+             * it immediately in the same frame, causing a stack overflow
+             * (draw_popup + clear + full redraw all nested in one frame). */
             if ((press & BUTTON_START) && !ticker_search_active()) {
                 editing = false;
                 ticker_search_open((u8)(selected >= 0 ? (u8)selected : 0));
+            } else {
+                ticker_search_frame(press);
             }
-
-            /* Ticker search popup handles all input while open. */
-            ticker_search_frame(press);
 
             if (ticker_search_active()) continue;
 
