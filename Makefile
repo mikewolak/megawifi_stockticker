@@ -160,6 +160,12 @@ $(OUT)/stock_ticker.o: $(SRC)/stock_ticker.c $(SRC)/ticker_search.h $(OUT)
 $(SEARCH_OBJ): $(SRC)/ticker_search.c $(SRC)/ticker_search.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Fetch NASDAQ + NYSE/AMEX/Arca listings and build the binary DB.
+# Not checked in — generated on first build (requires internet access).
+$(CURDIR)/nasdaq_tickers.bin:
+	@echo "nasdaq_tickers.bin not found — fetching from NASDAQ trader FTP..."
+	python3 $(CURDIR)/conv.py
+
 # Generate a .s file that .incbin-s the NASDAQ ticker database using the
 # absolute path so GAS resolves it correctly regardless of cwd.
 $(NASDAQ_S_GEN): $(CURDIR)/nasdaq_tickers.bin | $(OUT)

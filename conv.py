@@ -1,7 +1,7 @@
 """
-conv.py — build nasdaq_tickers.bin from NASDAQ + NYSE/AMEX/Arca listings.
+conv.py — fetch NASDAQ + NYSE/AMEX/Arca listings and build nasdaq_tickers.bin.
 
-Sources (fetched live from NASDAQ trader FTP):
+Sources (live from NASDAQ trader FTP — no API key required):
   nasdaqlisted.txt  — NASDAQ Global Select, Global Market, Capital Market
   otherlisted.txt   — NYSE (N), AMEX (A), NYSE Arca (P), BATS (Z)
 
@@ -14,6 +14,7 @@ Run: python3 conv.py
 
 import csv
 import io
+import sys
 import urllib.request
 
 NASDAQ_URL = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt"
@@ -23,9 +24,13 @@ OUT_FILE   = "nasdaq_tickers.bin"
 results = {}   # symbol -> name  (dict deduplicates)
 
 # ── NASDAQ listed ────────────────────────────────────────────────────────────
-print("Fetching nasdaqlisted.txt ...")
-with urllib.request.urlopen(NASDAQ_URL) as r:
-    text = r.read().decode("utf-8")
+print("Fetching nasdaqlisted.txt ...", flush=True)
+try:
+    with urllib.request.urlopen(NASDAQ_URL) as r:
+        text = r.read().decode("utf-8")
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
 
 for row in csv.DictReader(io.StringIO(text), delimiter="|"):
     if row.get("Test Issue") != "N": continue
@@ -38,9 +43,13 @@ for row in csv.DictReader(io.StringIO(text), delimiter="|"):
 print(f"  {len(results)} NASDAQ stocks")
 
 # ── Other listed (NYSE / AMEX / Arca / BATS) ────────────────────────────────
-print("Fetching otherlisted.txt ...")
-with urllib.request.urlopen(OTHER_URL) as r:
-    text = r.read().decode("utf-8")
+print("Fetching otherlisted.txt ...", flush=True)
+try:
+    with urllib.request.urlopen(OTHER_URL) as r:
+        text = r.read().decode("utf-8")
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
 
 before = len(results)
 for row in csv.DictReader(io.StringIO(text), delimiter="|"):
@@ -49,14 +58,14 @@ for row in csv.DictReader(io.StringIO(text), delimiter="|"):
     sym  = row["ACT Symbol"].strip()
     name = row["Security Name"].strip()
     if not sym or sym.startswith("^"): continue
-    if sym not in results:             # NASDAQ takes precedence on duplicates
+    if sym not in results:              # NASDAQ takes precedence on duplicates
         results[sym] = name
 
 print(f"  {len(results) - before} NYSE/AMEX/Arca stocks added")
 
 # ── Write binary blob ────────────────────────────────────────────────────────
 sorted_syms = sorted(results.keys())
-print(f"Writing {len(sorted_syms)} records → {OUT_FILE}")
+print(f"Writing {len(sorted_syms)} records → {OUT_FILE}", flush=True)
 
 with open(OUT_FILE, "wb") as f:
     for sym in sorted_syms:
