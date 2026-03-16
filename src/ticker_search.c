@@ -239,7 +239,7 @@ static void draw_hint(void)
 
 static void draw_popup(void)
 {
-    static char header[42];
+    static char header[48]; /* 44 chars + null for 1-digit slot; was [42] — overflow */
     clear_rows(POP_TOP, POP_BOT);
     sprintf(header, "--[ TICKER SEARCH: slot %u ]--- START=close--",
             (unsigned)(ts_target_slot + 1));
