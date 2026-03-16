@@ -353,14 +353,16 @@ static void draw_price_row(u8 i)
 
     if (is_googl(i)) {
         draw_googl(1, row);
+        sim_setpal(PAL0);
+        sim_draw(" ", 6, row);
     } else {
         u8 slen_s;
         sim_setpal(ticker_sym_pal[i]);
         sim_draw(t.symbol, 1, row);
         slen_s = (u8)strlen(t.symbol);
-        if (slen_s < 5) {
-            char pad[6] = "     ";
-            pad[5 - slen_s] = '\0';
+        if (slen_s < 6) {
+            char pad[7] = "      ";
+            pad[6 - slen_s] = '\0';
             sim_setpal(PAL0);
             sim_draw(pad, 1 + slen_s, row);
         }
@@ -368,7 +370,7 @@ static void draw_price_row(u8 i)
 
     if (!t.valid) {
         sim_setpal(PAL0);
-        sim_draw("  Loading...              ", 6, row);
+        sim_draw(" Loading...              ", 7, row);
         return;
     }
 
@@ -383,10 +385,10 @@ static void draw_price_row(u8 i)
         /* price — 10 chars fixed */
         n = (u8)sprintf(pricebuf, "$%ld.%02ld",
                         (long)(price / 100), (long)(price % 100));
-        while (n < 10) pricebuf[n++] = ' ';
-        pricebuf[10] = '\0';
+        while (n < 9) pricebuf[n++] = ' ';
+        pricebuf[9] = '\0';
         sim_setpal(PAL0);
-        sim_draw(pricebuf, 6, row);
+        sim_draw(pricebuf, 7, row);
 
         /* delta — 14 chars fixed */
         n = (u8)sprintf(deltabuf, " %c%ld.%02ld(%c%ld.%02ld%%)",

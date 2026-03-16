@@ -610,15 +610,17 @@ static void draw_price_row(u8 i)
     /* symbol: company logo color (GOOGL gets per-letter treatment) */
     if (is_googl(i)) {
         draw_googl_symbol(1, row);
+        VDP_setTextPalette(PAL0);
+        VDP_drawText(" ", 6, row);
     } else {
         VDP_setTextPalette(ticker_sym_pal[i]);
         VDP_drawText(tickers[i].symbol, 1, row);
         /* pad to 5 chars */
         {
             u8 slen = (u8)strlen(tickers[i].symbol);
-            if (slen < 5) {
-                char pad[5] = "     ";
-                pad[5 - slen] = '\0';
+            if (slen < 6) {
+                char pad[6] = "      ";
+                pad[6 - slen] = '\0';
                 VDP_setTextPalette(PAL0);
                 VDP_drawText(pad, (u16)(1 + slen), row);
             }
@@ -627,7 +629,7 @@ static void draw_price_row(u8 i)
 
     if (!tickers[i].valid) {
         VDP_setTextPalette(PAL0);
-        VDP_drawText("  Loading...              ", 6, row);
+        VDP_drawText(" Loading...              ", 7, row);
         return;
     }
 
@@ -642,10 +644,10 @@ static void draw_price_row(u8 i)
         /* price — 10 chars fixed */
         n = (u8)sprintf(pricebuf, "$%ld.%02ld",
                         (long)(price / 100), (long)(price % 100));
-        while (n < 10) pricebuf[n++] = ' ';
-        pricebuf[10] = '\0';
+        while (n < 9) pricebuf[n++] = ' ';
+        pricebuf[9] = '\0';
         VDP_setTextPalette(PAL0);
-        VDP_drawText(pricebuf, 6, row);
+        VDP_drawText(pricebuf, 7, row);
 
         /* delta — 14 chars fixed (green/red) */
         n = (u8)sprintf(deltabuf, " %c%ld.%02ld(%c%ld.%02ld%%)",
