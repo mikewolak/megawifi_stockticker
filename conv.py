@@ -1,28 +1,67 @@
-import csv, requests, time
+"""
+conv.py — build nasdaq_tickers.bin from NASDAQ + NYSE/AMEX/Arca listings.
 
-FINNHUB_KEY = "your_key"
+Sources (fetched live from NASDAQ trader FTP):
+  nasdaqlisted.txt  — NASDAQ Global Select, Global Market, Capital Market
+  otherlisted.txt   — NYSE (N), AMEX (A), NYSE Arca (P), BATS (Z)
 
-with open("nasdaq.txt") as f:
-    rows = list(csv.DictReader(f, delimiter="|"))
+Record layout (38 bytes, sorted by symbol):
+  offset 0..5   char symbol[6]   null-padded
+  offset 6..37  char name[32]    truncated, null-padded
 
-# Filter out test issues, ETFs, garbage
-stocks = [r for r in rows 
-          if r["Test Issue"] == "N" 
-          and r["ETF"] == "N"
-          and r["Financial Status"] == "N"]
+Run: python3 conv.py
+"""
 
-results = []
-for r in stocks:
-    sym = r["Symbol"].strip()
-    name = r["Security Name"].strip()
-    # Optionally hit Finnhub for sector
-    # profile = requests.get(f"https://finnhub.io/api/v1/stock/profile2?symbol={sym}&token={FINNHUB_KEY}").json()
-    # sector = profile.get("finnhubIndustry", "")
-    results.append({"symbol": sym, "name": name})
-    
-# Write sorted binary blob: 6-byte symbol (null padded) + 32-byte name = 38 bytes/record
-with open("nasdaq_tickers.bin", "wb") as f:
-    for r in sorted(results, key=lambda x: x["symbol"]):
-        sym = r["symbol"].encode().ljust(6, b'\x00')[:6]
-        name = r["name"].encode().ljust(32, b'\x00')[:32]
-        f.write(sym + name)
+import csv
+import io
+import urllib.request
+
+NASDAQ_URL = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt"
+OTHER_URL  = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt"
+OUT_FILE   = "nasdaq_tickers.bin"
+
+results = {}   # symbol -> name  (dict deduplicates)
+
+# ── NASDAQ listed ────────────────────────────────────────────────────────────
+print("Fetching nasdaqlisted.txt ...")
+with urllib.request.urlopen(NASDAQ_URL) as r:
+    text = r.read().decode("utf-8")
+
+for row in csv.DictReader(io.StringIO(text), delimiter="|"):
+    if row.get("Test Issue") != "N": continue
+    if row.get("ETF")        != "N": continue
+    sym  = row["Symbol"].strip()
+    name = row["Security Name"].strip()
+    if not sym or sym.startswith("^"): continue
+    results[sym] = name
+
+print(f"  {len(results)} NASDAQ stocks")
+
+# ── Other listed (NYSE / AMEX / Arca / BATS) ────────────────────────────────
+print("Fetching otherlisted.txt ...")
+with urllib.request.urlopen(OTHER_URL) as r:
+    text = r.read().decode("utf-8")
+
+before = len(results)
+for row in csv.DictReader(io.StringIO(text), delimiter="|"):
+    if row.get("Test Issue") != "N": continue
+    if row.get("ETF")        != "N": continue
+    sym  = row["ACT Symbol"].strip()
+    name = row["Security Name"].strip()
+    if not sym or sym.startswith("^"): continue
+    if sym not in results:             # NASDAQ takes precedence on duplicates
+        results[sym] = name
+
+print(f"  {len(results) - before} NYSE/AMEX/Arca stocks added")
+
+# ── Write binary blob ────────────────────────────────────────────────────────
+sorted_syms = sorted(results.keys())
+print(f"Writing {len(sorted_syms)} records → {OUT_FILE}")
+
+with open(OUT_FILE, "wb") as f:
+    for sym in sorted_syms:
+        sb = sym.encode().ljust(6, b"\x00")[:6]
+        nb = results[sym].encode().ljust(32, b"\x00")[:32]
+        f.write(sb + nb)
+
+print(f"Done — {len(sorted_syms) * 38} bytes ({len(sorted_syms) * 38 / 1024:.1f} KB)")
