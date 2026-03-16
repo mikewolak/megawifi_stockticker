@@ -702,7 +702,7 @@ static void draw_title(void)
     VDP_setTextPalette(PAL0);
     VDP_drawText(title, 0, 0);
     VDP_setTextPalette(PAL0);
-    VDP_drawText("(c)2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
+    VDP_drawText("(c) March 2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
 }
 
 /* -------------------------------------------------------------------------
@@ -852,7 +852,7 @@ int main(bool hard_reset)
     VDP_setTextPalette(PAL0);
     VDP_drawText("[ MegaWifi Stock Ticker ]", 0, 0);
     VDP_setTextPalette(PAL0);
-    VDP_drawText("(c)2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
+    VDP_drawText("(c) March 2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
 
     /* --- Joystick init ------------------------------------------------ */
     JOY_init();
