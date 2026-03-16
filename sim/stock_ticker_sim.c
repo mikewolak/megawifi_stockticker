@@ -1135,8 +1135,12 @@ int main(void)
 
         /* START: open popup — if/else prevents same-frame open+close */
         if ((press & BUTTON_START) && !ticker_search_active()) {
-            editing = false;
-            ticker_search_open((u8)(selected >= 0 ? (u8)selected : 0));
+            if (editing) {
+                editing = false;
+                draw_price_row((u8)selected);
+            } else {
+                ticker_search_open((u8)(selected >= 0 ? (u8)selected : 0));
+            }
         } else {
             ticker_search_frame(press);
         }

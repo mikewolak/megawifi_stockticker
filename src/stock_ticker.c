@@ -949,8 +949,12 @@ int main(bool hard_reset)
              * it immediately in the same frame, causing a stack overflow
              * (draw_popup + clear + full redraw all nested in one frame). */
             if ((press & BUTTON_START) && !ticker_search_active()) {
-                editing = false;
-                ticker_search_open((u8)(selected >= 0 ? (u8)selected : 0));
+                if (editing) {
+                    editing = false;
+                    draw_price_row((u8)selected);
+                } else {
+                    ticker_search_open((u8)(selected >= 0 ? (u8)selected : 0));
+                }
             } else {
                 ticker_search_frame(press);
             }
