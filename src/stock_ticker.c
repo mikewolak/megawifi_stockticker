@@ -232,7 +232,7 @@ static void status_clear(void)
 
 static void status_err(const char *msg)
 {
-    char buf[42];
+    static char buf[42];
     uint8_t i = 0;
     while (msg[i] && i < 39) { buf[i] = msg[i]; i++; }
     while (i < 40) buf[i++] = ' ';
@@ -246,7 +246,7 @@ static void status_err(const char *msg)
 /* Used only during init for one-time progress messages */
 static void status_info(const char *msg)
 {
-    char buf[42];
+    static char buf[42];
     uint8_t i = 0;
     while (msg[i] && i < 39) { buf[i] = msg[i]; i++; }
     while (i < 40) buf[i++] = ' ';
@@ -262,7 +262,7 @@ static void status_info(const char *msg)
 static void draw_countdown(u16 frame)
 {
     int secs = (int)((UPDATE_FRAMES - frame) / FPS);
-    char buf[42];
+    static char buf[42];
     if (last_update_str[0])
         sprintf(buf, "Next Update:%2ds %s  ", secs, last_update_str);
     else
@@ -307,8 +307,8 @@ static void fetch_quote_https(u8 idx)
     int16_t http_status = 0;
     int16_t recv_len = 0;
     uint32_t content_len = 0;
-    char url[160];
-    char dbg[42];
+    static char url[160];
+    static char dbg[42];
     s32 price = 0x7FFFFFFF, prev = 0x7FFFFFFF;
     const char *sym = tickers[idx].symbol;
 
@@ -628,8 +628,8 @@ static void format_net_worth(char *buf, s64 total_cents)
 static void draw_net_worth(void)
 {
     s64  total_cents = 0;
-    char amtbuf[20];
-    char line[42];
+    static char amtbuf[20];
+    static char line[42];
     u8   i, used;
 
     for (i = 0; i < MAX_TICKERS; i++) {
@@ -668,9 +668,9 @@ static void draw_net_worth(void)
 /* Draw a single ticker row — called once per frame (rolling) to avoid stutter. */
 static void draw_price_row(u8 i)
 {
-    char pricebuf[16];
-    char deltabuf[20];
-    char rightbuf[12]; /* timestamp or share count */
+    static char pricebuf[16];
+    static char deltabuf[20];
+    static char rightbuf[12]; /* timestamp or share count */
     u8   n;
     u8   row = PRICE_START_ROW + i * PRICE_ROW_STRIDE;
     bool sel = (selected == (s8)i);
@@ -773,7 +773,7 @@ static void draw_price_panel(void)
  * ---------------------------------------------------------------------- */
 static void draw_title(void)
 {
-    char title[42];
+    static char title[42];
     sprintf(title, "[ MegaWifi Stock Ticker v%d.%d %s ]",
             (int)fw_major, (int)fw_minor, fw_variant);
     VDP_setTextPalette(PAL0);
@@ -977,12 +977,22 @@ int main(bool hard_reset)
     }
 
     /* --- Seed RNG and assign random share counts ----------------------
-     * rng_seed_ctr has been accumulating since startup through both the
-     * fetch_draw_hook (fires every VBlank during mw_command waits —
-     * covers WiFi association + mw_sleep) and the NTP wait loop above.
-     * The total count (typically 200-2000 frames) varies with AP timing,
-     * providing enough entropy for a randomised starting position.
+     * Mix the VBlank counter with the current NTP clock time (seconds
+     * since midnight, 0-86399).  WiFi connect timing alone is too
+     * consistent — the clock gives entropy that changes every second,
+     * ensuring different share counts on every boot.
      * ------------------------------------------------------------------ */
+    {
+        uint32_t dt[2] = {0, 0};
+        char *ts = mw_date_time_get(dt);
+        /* ts: "WWW MMM DD HH:MM:SS YYYY" — extract HH, MM, SS */
+        if (ts && ts[11] && ts[17]) {
+            u16 hh = (u16)((ts[11]-'0')*10 + (ts[12]-'0'));
+            u16 mm = (u16)((ts[14]-'0')*10 + (ts[15]-'0'));
+            u16 ss = (u16)((ts[17]-'0')*10 + (ts[18]-'0'));
+            rng_seed_ctr ^= (u16)(hh * 3600 + mm * 60 + ss);
+        }
+    }
     setRandomSeed(rng_seed_ctr);
     for (i = 0; i < MAX_TICKERS; i++) {
         /* Combine two u16 values to reach 1-100,000 range */

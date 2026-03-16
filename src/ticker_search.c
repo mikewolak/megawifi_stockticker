@@ -178,7 +178,7 @@ static void draw_keyboard(void)
 
 static void draw_search_box(void)
 {
-    char line[42];
+    static char line[42];
     const char *cur = ticker_get_slot_sym(ts_target_slot);
     sprintf(line, "Type: %-6s_  replacing slot %u: %-5s",
             sbuf, (unsigned)(ts_target_slot + 1), cur[0] ? cur : "(empty)");
@@ -193,13 +193,13 @@ static void draw_results(void)
     u8  total_pages  = res_total
                        ? (u8)((res_total + N_RESULTS - 1) / N_RESULTS)
                        : 1;
-    char line[42];
+    static char line[42];
+    static char sym[7];
+    static char ntrunc[25];
 
     for (i = 0; i < N_RESULTS; i++) {
         u32  idx = base + i;
         bool sel = (ts_mode == MODE_RESULTS) && (res_sel == i);
-        char sym[7];
-        char ntrunc[25];
         u8   j;
 
         /* blank the row first */
@@ -239,7 +239,7 @@ static void draw_hint(void)
 
 static void draw_popup(void)
 {
-    char header[42];
+    static char header[42];
     clear_rows(POP_TOP, POP_BOT);
     sprintf(header, "--[ TICKER SEARCH: slot %u ]--- START=close--",
             (unsigned)(ts_target_slot + 1));
@@ -276,7 +276,7 @@ static void kb_backspace(void)
 
 static void set_ticker_at(u32 idx)
 {
-    char sym[8];
+    static char sym[8];
     u8   j;
 
     for (j = 0; j < SYM_LEN; j++)
