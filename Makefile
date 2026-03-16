@@ -84,10 +84,13 @@ MW_OBJS += $(OUT)/lsd.o
 MW_OBJS += $(OUT)/16c550.o
 MW_OBJS += $(OUT)/json.o
 
-# Application object
-APP_OBJ = $(OUT)/stock_ticker.o
+# Application objects
+APP_OBJ      = $(OUT)/stock_ticker.o
+SEARCH_OBJ   = $(OUT)/ticker_search.o
+NASDAQ_S_GEN = $(OUT)/nasdaq_tickers.s
+NASDAQ_OBJ   = $(OUT)/nasdaq_tickers.o
 
-ALL_OBJS = $(BOOT_OBJ_SEGA) $(RES_OBJ) $(APP_OBJ) $(MW_OBJS)
+ALL_OBJS = $(BOOT_OBJ_SEGA) $(RES_OBJ) $(APP_OBJ) $(SEARCH_OBJ) $(NASDAQ_OBJ) $(MW_OBJS)
 
 ################################################################################
 
@@ -150,9 +153,21 @@ $(OUT)/json.o: $(MW_SRC)/json.c
 # Application
 ################################################################################
 
-$(OUT)/stock_ticker.o: $(SRC)/stock_ticker.c $(OUT)
+$(OUT)/stock_ticker.o: $(SRC)/stock_ticker.c $(SRC)/ticker_search.h $(OUT)
 	@next=$$(($(BUILD_NUM) + 1)); echo $$next > $(BUILD_NUM_FILE); echo "Build: $$next"
 	$(CC) $(CFLAGS) -DBUILD_NUM=$$(cat $(BUILD_NUM_FILE)) -c $< -o $@
+
+$(SEARCH_OBJ): $(SRC)/ticker_search.c $(SRC)/ticker_search.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Generate a .s file that .incbin-s the NASDAQ ticker database using the
+# absolute path so GAS resolves it correctly regardless of cwd.
+$(NASDAQ_S_GEN): $(CURDIR)/nasdaq_tickers.bin | $(OUT)
+	@printf '    .section .rodata\n    .global nasdaq_tickers_start\n    .global nasdaq_tickers_end\nnasdaq_tickers_start:\n    .incbin "%s"\nnasdaq_tickers_end:\n    .byte 0\n' \
+	    "$(CURDIR)/nasdaq_tickers.bin" > $@
+
+$(NASDAQ_OBJ): $(NASDAQ_S_GEN)
+	$(CC) $(AFLAGS) -c $< -o $@
 
 ################################################################################
 # Link

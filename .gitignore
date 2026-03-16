@@ -5,3 +5,7 @@ TOKEN.md
 b
 *.wine.png
 *.wine.svg
+cfg/
+nvram/
+res/nasdaq_bg_test.png
+vecteezy_*
