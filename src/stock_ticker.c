@@ -32,6 +32,10 @@ static void draw_price_row(u8 i);
 /* no stdlib.h available in SGDK headers; provide minimal prototypes */
 long atol(const char *nptr);
 
+/* 64-bit integer type — not in SGDK's types.h but available from GCC */
+typedef signed long long   s64;
+typedef unsigned long long u64;
+
 static char *find_char(const char *s, char c)
 {
     while (*s) { if (*s == c) return (char*)s; s++; }
@@ -59,18 +63,20 @@ static const char *find_substr(const char *hay, const char *needle)
 #define AP_SLOT             0
 #define AP_SSID             "YourSSID"
 #define AP_PASS             "YourPassword"
-/* 10s per ticker × 6 tickers = 60s full cycle = 6 calls/min (limit: 60/min) */
+/* 10s per ticker × 8 tickers = 80s full cycle = 6 calls/min (limit: 60/min) */
 #define UPDATE_FRAMES       (FPS * 10)
-#define MAX_TICKERS         8   /* 6 fixed + 2 user-addable via search popup */
+#define MAX_TICKERS         8
 #define TICKER_SCROLL_SPEED 1
 #define COPYRIGHT_ROW       2               /* copyright line (blank row 1 above) */
 #define COPYRIGHT_COL       2               /* aligned with "M" in MegaWifi  */
 #define COUNTDOWN_ROW       4               /* "Next Update: Xs" (blank row 3 above) */
-#define COUNTDOWN_COL       2               /* under "M" in MegaWifi         */
+#define COUNTDOWN_COL       2              /* under "M" in MegaWifi         */
 #define STATUS_ROW          5               /* error-only status line        */
-/* Prices centered between STATUS_ROW+1 and MARQUEE_ROW-1, shifted 1 row up. */
-#define PRICE_START_ROW     9
+/* Prices centered between STATUS_ROW+1 and MARQUEE_ROW-1 */
+#define PRICE_START_ROW     7
 #define PRICE_ROW_STRIDE    2
+/* Net worth line: one blank row after the last ticker */
+#define NET_WORTH_ROW       (PRICE_START_ROW + MAX_TICKERS * PRICE_ROW_STRIDE + 1)
 #define MARQUEE_ROW         27              /* bottom row of the screen      */
 #ifndef FINNHUB_TOKEN
 #define FINNHUB_TOKEN   "REPLACE_WITH_YOUR_TOKEN"
@@ -82,45 +88,51 @@ static const char *find_substr(const char *hay, const char *needle)
  * Ticker data
  * ---------------------------------------------------------------------- */
 typedef struct {
-    const char *symbol;
+    char        symbol[8];          /* mutable — all slots editable          */
     s32         price_cents;
     s32         prev_close_cents;
     bool        valid;
-    char        timestamp[12];   /* "HH:MM:SS\0" (CST) */
+    char        timestamp[12];      /* "HH:MM AM\0" (CST)                    */
+    u32         shares_owned;       /* number of shares held                 */
 } TickerEntry;
 
-/* Mutable symbol buffers for the two user-addable slots (slots 6 & 7).
- * ticker_add_user() writes here and points tickers[6/7].symbol at them. */
-static char user_sym[2][8] = {"", ""};
-
-static TickerEntry tickers[MAX_TICKERS] = {
-    { "ORCL",  0, 0, false, "" },
-    { "NVDA",  0, 0, false, "" },
-    { "AMZN",  0, 0, false, "" },
-    { "IBM",   0, 0, false, "" },
-    { "MSFT",  0, 0, false, "" },
-    { "GOOGL", 0, 0, false, "" },
-    { "",      0, 0, false, "" },  /* user slot 0 — empty until added */
-    { "",      0, 0, false, "" },  /* user slot 1 — empty until added */
+/* Default symbols for all 8 slots — all editable at runtime. */
+static const char *default_syms[MAX_TICKERS] = {
+    "ORCL", "NVDA", "AMZN", "IBM", "MSFT", "GOOGL", "META", "AVGO"
 };
+
+static TickerEntry tickers[MAX_TICKERS];
 
 /* Per-ticker symbol palette — matched to corporate logo colours.
  * Four working palettes (all use foreground slot index 15 within palette):
  *   PAL0 = white   PAL1 = green   PAL2 = red   PAL3 = cyan
  *
  * GOOGL gets per-letter multi-colour treatment (see draw_googl_symbol).
- * Its entry here is PAL0 (unused — draw_price_panel skips it for GOOGL).
- * User slots 6 & 7 default to white. */
-static const u8 ticker_sym_pal[MAX_TICKERS] = {
+ * Slots with no recognised symbol default to PAL0. */
+static u8 ticker_sym_pal[MAX_TICKERS] = {
     PAL2, /* ORCL  — Oracle red          */
     PAL1, /* NVDA  — Nvidia green        */
     PAL0, /* AMZN  — white (no orange)   */
     PAL3, /* IBM   — IBM blue/cyan       */
     PAL3, /* MSFT  — Microsoft cyan      */
     PAL0, /* GOOGL — multi (see below)   */
-    PAL0, /* user slot 0                 */
-    PAL0, /* user slot 1                 */
+    PAL1, /* META  — Meta green          */
+    PAL0, /* AVGO  — white               */
 };
+
+/* Update the palette for a slot when its symbol changes. */
+static void update_ticker_pal(u8 i)
+{
+    const char *s = tickers[i].symbol;
+    u8 pal = PAL0;
+    if      (s[0]=='O' && s[1]=='R' && s[2]=='C' && s[3]=='L' && !s[4]) pal = PAL2;
+    else if (s[0]=='N' && s[1]=='V' && s[2]=='D' && s[3]=='A' && !s[4]) pal = PAL1;
+    else if (s[0]=='I' && s[1]=='B' && s[2]=='M' && !s[3])              pal = PAL3;
+    else if (s[0]=='M' && s[1]=='S' && s[2]=='F' && s[3]=='T' && !s[4]) pal = PAL3;
+    else if (s[0]=='M' && s[1]=='E' && s[2]=='T' && s[3]=='A' && !s[4]) pal = PAL1;
+    else if (s[0]=='G' && s[1]=='O' && s[2]=='O' && s[3]=='G' && s[4]=='L' && !s[5]) pal = PAL0; /* multi */
+    ticker_sym_pal[i] = pal;
+}
 
 /* draw_googl_symbol() — renders "GOOGL" letter-by-letter in Google brand colours.
  *   G=cyan(PAL3)  O=red(PAL2)  O=white(PAL0)  G=cyan(PAL3)  L=green(PAL1) */
@@ -136,6 +148,27 @@ static void draw_googl_symbol(u8 col, u8 row)
         VDP_drawText(ch, col + i, row);
     }
 }
+
+static bool is_googl(u8 i)
+{
+    const char *s = tickers[i].symbol;
+    return s[0]=='G' && s[1]=='O' && s[2]=='O' && s[3]=='G' && s[4]=='L' && !s[5];
+}
+
+/* -------------------------------------------------------------------------
+ * RNG seed counter — incremented in draw hook (fires every VBlank during
+ * all mw_command waits, including WiFi association and mw_sleep).
+ * Seeded into SGDK's setRandomSeed() after WiFi + NTP init.
+ * ---------------------------------------------------------------------- */
+static u16 rng_seed_ctr = 0;
+
+/* -------------------------------------------------------------------------
+ * Selection / share-edit state
+ *   selected  : which ticker row the cursor is on (-1 = none)
+ *   editing   : TRUE = UP/DOWN/LEFT/RIGHT/A/B modify share count
+ * ---------------------------------------------------------------------- */
+static s8  selected  = -1;
+static bool editing  = false;
 
 /* -------------------------------------------------------------------------
  * Scrolling marquee state
@@ -364,7 +397,7 @@ done:
 
 static void fetch_quote(u8 idx)
 {
-    if (!tickers[idx].symbol || tickers[idx].symbol[0] == '\0') return;
+    if (tickers[idx].symbol[0] == '\0') return;
     fetch_quote_https(idx);
 }
 
@@ -379,7 +412,7 @@ static void rebuild_marquee(void)
     u8 i, j, n, sym_len, white_len;
 
     for (i = 0; i < MAX_TICKERS; i++) {
-        if (tickers[i].symbol[0] == '\0') continue; /* skip empty user slots */
+        if (tickers[i].symbol[0] == '\0') continue;
         sym_len   = (u8)strlen(tickers[i].symbol);
         white_len = 1 + sym_len + 1; /* leading space + symbol + ':' */
 
@@ -436,15 +469,16 @@ static void init_nasdaq_bg(void)
     VDP_loadTileSet(nasdaq_bg.tileset, TILE_USER_INDEX, DMA);
     VDP_waitDMACompletion();
 
-    /* Mask only text rows on BG_A; open rows remain transparent (show BG_B). */
+    /* Mask text rows + net worth row on BG_A; open rows show BG_B. */
     {
         u16 black = TILE_ATTR_FULL(PAL0, FALSE, FALSE, FALSE, BLACK_TILE_IDX);
         u16 r;
         VDP_loadTileData(black_tile_data, BLACK_TILE_IDX, 1, CPU);
-        VDP_fillTileMapRect(BG_A, black, 0, 0, 40, 4);
+        VDP_fillTileMapRect(BG_A, black, 0, 0, 40, PRICE_START_ROW);
         for (r = 0; r < MAX_TICKERS; r++)
             VDP_fillTileMapRect(BG_A, black, 0,
                                 PRICE_START_ROW + r * PRICE_ROW_STRIDE, 40, 1);
+        VDP_fillTileMapRect(BG_A, black, 0, NET_WORTH_ROW, 40, 1);
     }
 
     /* Tile BG_B (64×32) with the 16×8 pattern (64÷16=4, 32÷8=4 — seamless). */
@@ -518,12 +552,9 @@ static void update_marquee_scroll(void)
     neg_scroll = -(s16)scroll_x;
     VDP_setHorizontalScrollTile(BG_A, MARQUEE_ROW, &neg_scroll, 1, CPU);
 
-    /* Stream the next char each time the scroll crosses a tile boundary.
-     * The tile that just exited the left edge is (scroll_x/8 - 1) % 64 — it
-     * will cycle back into the right edge after another 64 tile-widths, so
-     * pre-load it with the next character now while it is off-screen. */
+    /* Stream the next char each time the scroll crosses a tile boundary. */
     if ((scroll_x % 8) == 0) {
-        u16 exited = (u16)((scroll_x / 8 + 63) % 64); /* = (scroll_x/8 - 1 + 64)%64 */
+        u16 exited = (u16)((scroll_x / 8 + 63) % 64);
         write_marquee_stream_tile(exited, marquee_str_pos);
         marquee_str_pos++;
     }
@@ -544,10 +575,12 @@ static void update_marquee_scroll(void)
  * fetch_draw_hook() — called by mw_command() once per frame while waiting
  * for an ESP32 HTTP response.  Keeps the display alive during the ~0.5–1.5 s
  * round-trip that would otherwise freeze the screen.
+ * Also increments rng_seed_ctr to accumulate entropy from WiFi init timing.
  * ---------------------------------------------------------------------- */
 static void fetch_draw_hook(void)
 {
     static u16 hook_frame = 0;
+    rng_seed_ctr++;
     /* TSK_superPend(1) already consumed a VBlank before this hook fires —
      * do NOT call VDP_waitVSync() here (re-entrant into SGDK task system).
      * Skip tile draws when the search popup is covering the screen. */
@@ -558,40 +591,117 @@ static void fetch_draw_hook(void)
 }
 
 /* -------------------------------------------------------------------------
+ * format_net_worth() — format s64 cents as "$NNN,NNN,NNN,NNN" whole dollars
+ * (no cents displayed).  Handles up to 999 billion dollars.
+ * ---------------------------------------------------------------------- */
+static void format_net_worth(char *buf, s64 total_cents)
+{
+    s64 dollars;
+    u32 bil, rem, mil, tho, hun;
+
+    if (total_cents < 0) total_cents = 0;
+    dollars = total_cents / (s64)100;
+
+    bil = (u32)(dollars / (s64)1000000000);
+    rem = (u32)(dollars % (s64)1000000000);
+    mil = rem / 1000000;
+    tho = (rem / 1000) % 1000;
+    hun = rem % 1000;
+
+    if (bil > 0)
+        sprintf(buf, "$%lu,%03lu,%03lu,%03lu",
+                (unsigned long)bil, (unsigned long)mil,
+                (unsigned long)tho, (unsigned long)hun);
+    else if (mil > 0)
+        sprintf(buf, "$%lu,%03lu,%03lu",
+                (unsigned long)mil, (unsigned long)tho, (unsigned long)hun);
+    else if (tho > 0)
+        sprintf(buf, "$%lu,%03lu",
+                (unsigned long)tho, (unsigned long)hun);
+    else
+        sprintf(buf, "$%lu", (unsigned long)hun);
+}
+
+/* -------------------------------------------------------------------------
+ * draw_net_worth() — NET_WORTH_ROW, white label + cyan value
+ * ---------------------------------------------------------------------- */
+static void draw_net_worth(void)
+{
+    s64  total_cents = 0;
+    char amtbuf[20];
+    char line[42];
+    u8   i, used;
+
+    for (i = 0; i < MAX_TICKERS; i++) {
+        if (tickers[i].valid && tickers[i].shares_owned > 0)
+            total_cents += (s64)tickers[i].price_cents * (s64)tickers[i].shares_owned;
+    }
+
+    format_net_worth(amtbuf, total_cents);
+
+    /* "Net Worth: " = 11 chars, then value in cyan, then spaces to end of line */
+    VDP_setTextPalette(PAL0);
+    VDP_drawText("Net Worth: ", 0, NET_WORTH_ROW);
+    VDP_setTextPalette(PAL3);
+    VDP_drawText(amtbuf, 11, NET_WORTH_ROW);
+    used = (u8)(11 + strlen(amtbuf));
+    for (i = 0; i < (u8)(40 - used) && i < sizeof(line) - 1; i++) line[i] = ' ';
+    line[i] = '\0';
+    VDP_setTextPalette(PAL0);
+    if (i > 0) VDP_drawText(line, used, NET_WORTH_ROW);
+}
+
+/* -------------------------------------------------------------------------
  * draw_price_panel()
  * ---------------------------------------------------------------------- */
 /* draw_price_panel()
  * Layout (40-char screen, all columns 0-based):
+ *   col  0      cursor '>' if selected, ' ' otherwise
  *   col  1- 5  symbol (company color)
  *   col  6-15  price  "$%-4ld.%02ld  " = 10 chars fixed (white)
  *   col 16-29  delta  " %c%ld.%02ld(%c%ld.%02ld%%)" padded to 14 (green/red)
- *   col 30-37  time   "HH:MM xM"  8 chars (white)
+ *   col 30-37  time   "HH:MM xM"  8 chars (white) — or share count when selected
  *
  * No row-clear: each field is padded to a fixed width so it always
  * overwrites any stale characters from a previous shorter value.
- * Called immediately after VDP_waitVSync() for tear-free rendering.
  */
 /* Draw a single ticker row — called once per frame (rolling) to avoid stutter. */
 static void draw_price_row(u8 i)
 {
     char pricebuf[16];
     char deltabuf[20];
+    char rightbuf[12]; /* timestamp or share count */
     u8   n;
     u8   row = PRICE_START_ROW + i * PRICE_ROW_STRIDE;
+    bool sel = (selected == (s8)i);
 
-    /* skip empty user slots — clear the row so stale data doesn't linger */
+    /* skip empty slots — clear the row */
     if (tickers[i].symbol[0] == '\0') {
         VDP_setTextPalette(PAL0);
         VDP_drawText("                                        ", 0, row);
         return;
     }
 
+    /* cursor */
+    VDP_setTextPalette(sel ? PAL1 : PAL0);
+    VDP_drawText(sel ? ">" : " ", 0, row);
+
     /* symbol: company logo color (GOOGL gets per-letter treatment) */
-    if (i == 5 /* GOOGL */) {
+    if (is_googl(i)) {
         draw_googl_symbol(1, row);
     } else {
         VDP_setTextPalette(ticker_sym_pal[i]);
         VDP_drawText(tickers[i].symbol, 1, row);
+        /* pad to 5 chars */
+        {
+            u8 slen = (u8)strlen(tickers[i].symbol);
+            if (slen < 5) {
+                char pad[5] = "     ";
+                pad[5 - slen] = '\0';
+                VDP_setTextPalette(PAL0);
+                VDP_drawText(pad, (u16)(1 + slen), row);
+            }
+        }
     }
 
     if (!tickers[i].valid) {
@@ -628,9 +738,25 @@ static void draw_price_row(u8 i)
             VDP_setTextPalette(PAL1); /* green — gain */
         VDP_drawText(deltabuf, 16, row);
 
-        /* timestamp — 8 chars (white) */
-        VDP_setTextPalette(PAL0);
-        VDP_drawText(tickers[i].timestamp, 30, row);
+        /* right column (col 30-39) — share count if selected, timestamp otherwise */
+        if (sel) {
+            /* show share count; blink brackets when editing */
+            u32 sh = tickers[i].shares_owned;
+            char lbr = editing ? '[' : ' ';
+            char rbr = editing ? ']' : ' ';
+            if (sh >= 100000)
+                sprintf(rightbuf, "%c%6lu%c   ", lbr, (unsigned long)sh, rbr);
+            else if (sh >= 10000)
+                sprintf(rightbuf, "%c%5lu%c    ", lbr, (unsigned long)sh, rbr);
+            else
+                sprintf(rightbuf, "%c%4lu%c     ", lbr, (unsigned long)sh, rbr);
+            VDP_setTextPalette(PAL3); /* cyan for share count */
+            VDP_drawText(rightbuf, 30, row);
+        } else {
+            VDP_setTextPalette(PAL0);
+            VDP_drawText(tickers[i].timestamp, 30, row);
+            VDP_drawText("  ", 38, row); /* clear any leftover */
+        }
     }
 }
 
@@ -639,6 +765,7 @@ static void draw_price_panel(void)
     u8 i;
     for (i = 0; i < MAX_TICKERS; i++)
         draw_price_row(i);
+    draw_net_worth();
 }
 
 /* -------------------------------------------------------------------------
@@ -656,14 +783,11 @@ static void draw_title(void)
 }
 
 /* -------------------------------------------------------------------------
- * ticker_add_user() — called by ticker_search.c when the user picks a ticker.
- * slot 0 → tickers[6], slot 1 → tickers[7].
+ * ticker_set_slot() — called by ticker_search.c when the user picks a ticker.
+ * Replaces any slot (0-7) with the new symbol; resets price/validity.
+ * Shares are preserved if the symbol changes (user may want to keep their count)
+ * but reset to 0 if the slot was empty.
  * ---------------------------------------------------------------------- */
-const char *ticker_get_user_sym(u8 slot)
-{
-    return (slot < 2) ? user_sym[slot] : "";
-}
-
 bool ticker_is_duplicate(const char *sym)
 {
     u8 i, j;
@@ -676,18 +800,24 @@ bool ticker_is_duplicate(const char *sym)
     return false;
 }
 
-void ticker_add_user(u8 slot, const char *sym)
+void ticker_set_slot(u8 slot, const char *sym)
 {
-    u8 base, j;
-    if (slot >= 2) return;
-    base = 6 + slot;
-    for (j = 0; j < 7 && sym[j]; j++) user_sym[slot][j] = sym[j];
-    user_sym[slot][j] = '\0';
-    tickers[base].symbol           = user_sym[slot];
-    tickers[base].valid            = false;
-    tickers[base].price_cents      = 0;
-    tickers[base].prev_close_cents = 0;
-    tickers[base].timestamp[0]     = '\0';
+    u8 j;
+    if (slot >= MAX_TICKERS) return;
+    bool was_empty = (tickers[slot].symbol[0] == '\0');
+    for (j = 0; j < 7 && sym[j]; j++) tickers[slot].symbol[j] = sym[j];
+    tickers[slot].symbol[j] = '\0';
+    tickers[slot].valid            = false;
+    tickers[slot].price_cents      = 0;
+    tickers[slot].prev_close_cents = 0;
+    tickers[slot].timestamp[0]     = '\0';
+    if (was_empty) tickers[slot].shares_owned = 0;
+    update_ticker_pal(slot);
+}
+
+const char *ticker_get_slot_sym(u8 slot)
+{
+    return (slot < MAX_TICKERS) ? tickers[slot].symbol : "";
 }
 
 /* -------------------------------------------------------------------------
@@ -701,6 +831,7 @@ static void ticker_popup_redraw(void)
     draw_countdown(0);
     for (i = 0; i < MAX_TICKERS; i++)
         draw_price_row(i);
+    draw_net_worth();
 }
 
 /* -------------------------------------------------------------------------
@@ -764,30 +895,36 @@ int main(bool hard_reset)
 {
     u16 frame        = UPDATE_FRAMES;
     u8  ticker_cycle = 0;
+    u8  i;
+
+    /* --- Init ticker table with defaults -------------------------------- */
+    for (i = 0; i < MAX_TICKERS; i++) {
+        u8 j;
+        for (j = 0; j < 7 && default_syms[i][j]; j++)
+            tickers[i].symbol[j] = default_syms[i][j];
+        tickers[i].symbol[j]        = '\0';
+        tickers[i].price_cents      = 0;
+        tickers[i].prev_close_cents = 0;
+        tickers[i].valid            = false;
+        tickers[i].timestamp[0]     = '\0';
+        tickers[i].shares_owned     = 0;
+        update_ticker_pal(i);
+    }
 
     /* --- VDP setup ---------------------------------------------------- */
     VDP_setScreenWidth320();
     VDP_setPlaneSize(64, 32, TRUE);
-    /* HSCROLL_TILE: each 8-scanline tile row has its own H-scroll value.
-     * BG_A rows 0-26 = 0 (static text), BG_A row 27 = marquee scroll.
-     * BG_B all rows = -bg_sx (diagonal logo background). */
     VDP_setScrollingMode(HSCROLL_TILE, VSCROLL_PLANE);
     VDP_clearPlane(BG_A, TRUE);
     VDP_clearPlane(BG_B, TRUE);
 
-    /* --- Palette setup ------------------------------------------------
-     * SGDK font tiles use pixel value 0xF (15) as the foreground colour.
-     * The foreground slot is therefore colour index 15 within each palette:
-     *   PAL0 = global CRAM[15], PAL1 = CRAM[31], PAL2 = CRAM[47], PAL3 = CRAM[63]
-     * CRAM[0] sets the VDP screen background colour.
-     * All other palette bg entries default to 0 (black) on hardware reset.
-     * ------------------------------------------------------------------ */
+    /* --- Palette setup ------------------------------------------------ */
     PAL_setColor(0,  RGB24_TO_VDPCOLOR(0x000000)); /* VDP background = black */
-    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); /* PAL0: white  — prices, neutral text */
-    PAL_setColor(31, RGB24_TO_VDPCOLOR(0x00CC00)); /* PAL1: green  — gains  / NVDA        */
-    PAL_setColor(47, RGB24_TO_VDPCOLOR(0xFF2020)); /* PAL2: red    — losses / ORCL         */
-    PAL_setColor(63, RGB24_TO_VDPCOLOR(0x00AAFF)); /* PAL3: cyan   — IBM / MSFT / GOOGL G  */
-    VDP_waitVSync(); /* flush CRAM writes before first draw */
+    PAL_setColor(15, RGB24_TO_VDPCOLOR(0xFFFFFF)); /* PAL0: white  */
+    PAL_setColor(31, RGB24_TO_VDPCOLOR(0x00CC00)); /* PAL1: green  */
+    PAL_setColor(47, RGB24_TO_VDPCOLOR(0xFF2020)); /* PAL2: red    */
+    PAL_setColor(63, RGB24_TO_VDPCOLOR(0x00AAFF)); /* PAL3: cyan   */
+    VDP_waitVSync();
 
     /* --- NASDAQ tiled background (enable with -DBCKGND_ON) ------------ */
 #ifdef BCKGND_ON
@@ -800,7 +937,7 @@ int main(bool hard_reset)
     VDP_setTextPalette(PAL0);
     VDP_drawText("(c)2026 Mike Wolak", COPYRIGHT_COL, COPYRIGHT_ROW);
 
-    /* --- Joystick init (required before JOY_readJoypad) --------------- */
+    /* --- Joystick init ------------------------------------------------ */
     JOY_init();
 
     /* --- Register draw hook so mw_command() keeps display alive ------- */
@@ -816,38 +953,50 @@ int main(bool hard_reset)
         while (1) VDP_waitVSync();
     }
 
-    draw_title(); /* update title with real fw version */
+    draw_title();
     status_info("WiFi OK — waiting for NTP...");
 
-    /* --- NTP sync ----------------------------------------------------- */
+    /* --- NTP sync — also accumulates RNG seed from frame count -------- */
     {
-        int frames = 0;
+        int ntp_frames = 0;
         int max_frames = MS_TO_FRAMES(15000);
         char nbuf[42];
-        while (frames < max_frames) {
+        while (ntp_frames < max_frames) {
             union mw_msg_sys_stat *ss = mw_sys_stat_get();
             if (ss && ss->dt_ok) break;
             VDP_waitVSync();
-            frames++;
+            rng_seed_ctr++;   /* count NTP-wait VBlanks toward seed */
+            ntp_frames++;
         }
-        if (frames >= max_frames) {
-            sprintf(nbuf, "NTP timeout (%ds) — continuing", (int)(frames / 60));
+        if (ntp_frames >= max_frames) {
+            sprintf(nbuf, "NTP timeout (%ds) — continuing", (int)(ntp_frames / 60));
             status_err(nbuf);
         } else {
             status_clear();
         }
     }
 
+    /* --- Seed RNG and assign random share counts ----------------------
+     * rng_seed_ctr has been accumulating since startup through both the
+     * fetch_draw_hook (fires every VBlank during mw_command waits —
+     * covers WiFi association + mw_sleep) and the NTP wait loop above.
+     * The total count (typically 200-2000 frames) varies with AP timing,
+     * providing enough entropy for a randomised starting position.
+     * ------------------------------------------------------------------ */
+    setRandomSeed(rng_seed_ctr);
+    for (i = 0; i < MAX_TICKERS; i++) {
+        /* Combine two u16 values to reach 1-100,000 range */
+        u32 r = ((u32)random() << 16) | (u32)random();
+        tickers[i].shares_owned = (r % 100000) + 1;
+    }
+
     mw_http_cleanup(); /* pre-fetch cleanup */
 
     /* --- Initial fetch ------------------------------------------------ */
-    {
-        u8 i;
-        for (i = 0; i < MAX_TICKERS; i++)
-            fetch_quote(i);
-        rebuild_marquee();
-        draw_price_panel();
-    }
+    for (i = 0; i < MAX_TICKERS; i++)
+        fetch_quote(i);
+    rebuild_marquee();
+    draw_price_panel();
 
     draw_countdown(0);
 
@@ -862,21 +1011,84 @@ int main(bool hard_reset)
             /* Scroll update MUST be first — must land in VBlank. */
             update_marquee_scroll();
 
-            /* Joystick — poll hardware then detect newly-pressed buttons.
-             * JOY_update() is normally called by the VBlank ISR via SYS_init(),
-             * but this project never calls SYS_init(), so we poll explicitly. */
             JOY_update();
             joy   = JOY_readJoypad(JOY_1);
             press = joy & ~prev_joy;
             prev_joy = joy;
 
-            /* Ticker search popup handles START; consumes all input when open. */
+            /* START: open ticker search for the selected row (or row 0). */
+            if ((press & BUTTON_START) && !ticker_search_active()) {
+                editing = false;
+                ticker_search_open((u8)(selected >= 0 ? (u8)selected : 0));
+            }
+
+            /* Ticker search popup handles all input while open. */
             ticker_search_frame(press);
 
-            if (ticker_search_active()) continue; /* popup owns the screen */
+            if (ticker_search_active()) continue;
 
-            /* Draw one ticker row per frame (rolling). */
-            draw_price_row((u8)(frame % MAX_TICKERS));
+            /* ----- Selection and share-edit controls ----- */
+            if (editing) {
+                /* UP/DOWN ±100, LEFT/RIGHT ±1000, A ±1, B exit */
+                if (press & BUTTON_UP) {
+                    tickers[(u8)selected].shares_owned += 100;
+                    draw_price_row((u8)selected);
+                    draw_net_worth();
+                } else if (press & BUTTON_DOWN) {
+                    if (tickers[(u8)selected].shares_owned >= 100)
+                        tickers[(u8)selected].shares_owned -= 100;
+                    else
+                        tickers[(u8)selected].shares_owned = 0;
+                    draw_price_row((u8)selected);
+                    draw_net_worth();
+                } else if (press & BUTTON_RIGHT) {
+                    tickers[(u8)selected].shares_owned += 1000;
+                    draw_price_row((u8)selected);
+                    draw_net_worth();
+                } else if (press & BUTTON_LEFT) {
+                    if (tickers[(u8)selected].shares_owned >= 1000)
+                        tickers[(u8)selected].shares_owned -= 1000;
+                    else
+                        tickers[(u8)selected].shares_owned = 0;
+                    draw_price_row((u8)selected);
+                    draw_net_worth();
+                } else if (press & BUTTON_A) {
+                    tickers[(u8)selected].shares_owned += 1;
+                    draw_price_row((u8)selected);
+                    draw_net_worth();
+                } else if (press & BUTTON_B) {
+                    if (tickers[(u8)selected].shares_owned > 0)
+                        tickers[(u8)selected].shares_owned -= 1;
+                    draw_price_row((u8)selected);
+                    draw_net_worth();
+                } else if (press & BUTTON_C) {
+                    editing = false;
+                    draw_price_row((u8)selected);
+                }
+            } else {
+                /* Selection mode: UP/DOWN move cursor, A enters edit mode */
+                if (press & BUTTON_UP) {
+                    u8 prev_sel = (u8)(selected >= 0 ? (u8)selected : 0);
+                    selected = (s8)((selected <= 0) ? MAX_TICKERS - 1 : selected - 1);
+                    draw_price_row(prev_sel);
+                    draw_price_row((u8)selected);
+                } else if (press & BUTTON_DOWN) {
+                    u8 prev_sel = (u8)(selected >= 0 ? (u8)selected : MAX_TICKERS - 1);
+                    selected = (s8)((selected < 0 || selected >= MAX_TICKERS - 1) ? 0 : selected + 1);
+                    draw_price_row(prev_sel);
+                    draw_price_row((u8)selected);
+                } else if ((press & BUTTON_A) && selected >= 0) {
+                    if (tickers[(u8)selected].symbol[0] != '\0') {
+                        editing = true;
+                        draw_price_row((u8)selected);
+                    }
+                }
+            }
+
+            /* Draw one ticker row per frame (rolling) — skip if we just
+             * explicitly updated it above. */
+            if (!editing)
+                draw_price_row((u8)(frame % MAX_TICKERS));
 
             if ((frame % FPS) == 0)
                 draw_countdown(frame);
@@ -886,6 +1098,7 @@ int main(bool hard_reset)
                 frame = 0;
                 fetch_quote(ticker_cycle);
                 rebuild_marquee();
+                draw_net_worth();
                 ticker_cycle = (u8)((ticker_cycle + 1) % MAX_TICKERS);
                 draw_countdown(frame);
             }

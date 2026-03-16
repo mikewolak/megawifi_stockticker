@@ -8,6 +8,9 @@
  *   offset 6..37  char name[32]   truncated company name, null-padded
  *
  * Screen popup occupies rows 4-26 (leaves title area and marquee intact).
+ *
+ * The popup always replaces a specific ticker slot (0..MAX_TICKERS-1),
+ * set by ticker_search_open(slot).  All slots are editable.
  */
 
 #include <genesis.h>
@@ -47,7 +50,7 @@ extern char nasdaq_tickers_end[];
  *  Row 14  : separator
  *  Rows 15-18: QWERTY keyboard (4 rows)
  *  Row 19  : hint line
- *  Rows 20-26: cleared (covers user-slot ticker rows + spare)
+ *  Rows 20-26: cleared (covers lower ticker rows + net worth row)
  */
 #define POP_TOP       4
 #define POP_BOT      26
@@ -76,11 +79,12 @@ static const u8 kb_lens[4] = {10, 10, 9, 7};
 static const char *const sp_label[N_SP] = {"DEL", "CLR", "ADD"};
 
 /* ── State ───────────────────────────────────────────────────────────────── */
-typedef enum { MODE_KB, MODE_RESULTS, MODE_REPLACE } ts_mode_t;
+typedef enum { MODE_KB, MODE_RESULTS } ts_mode_t;
 
 static bool       ts_active;
 static ts_mode_t  ts_mode;
 static ts_redraw_fn ts_redraw_cb;
+static u8         ts_target_slot;   /* which ticker slot we are replacing */
 
 /* search buffer */
 static char  sbuf[SYM_LEN + 1];
@@ -98,15 +102,7 @@ static u32   res_total;    /* number of matching records    */
 static u8    res_page;
 static u8    res_sel;      /* selected entry on current page */
 
-static u8    user_slots_used;
 static u32   total_records;
-
-/* pending symbol while user chooses which slot to replace */
-static char  replace_sym[8];
-static u8    replace_sel;    /* 0 = slot 1, 1 = slot 2 */
-
-/* extern to read current user slot symbols for the replace prompt */
-extern const char *ticker_get_user_sym(u8 slot);
 
 /* ── ROM accessors ───────────────────────────────────────────────────────── */
 static inline const char *rec_sym(u32 i)
@@ -183,8 +179,9 @@ static void draw_keyboard(void)
 static void draw_search_box(void)
 {
     char line[42];
-    sprintf(line, "Type: %-6s_  slots free: %u  ", sbuf,
-            (unsigned)(2 - user_slots_used));
+    const char *cur = ticker_get_slot_sym(ts_target_slot);
+    sprintf(line, "Type: %-6s_  replacing slot %u: %-5s",
+            sbuf, (unsigned)(ts_target_slot + 1), cur[0] ? cur : "(empty)");
     VDP_setTextPalette(PAL0);
     VDP_drawText(line, 1, SEARCH_ROW);
 }
@@ -227,44 +224,27 @@ static void draw_results(void)
     }
 
     VDP_setTextPalette(PAL0);
-    sprintf(line, "pg %u/%u  matches:%-5lu  [C=switch A=add]",
+    sprintf(line, "pg %u/%u  matches:%-5lu  [C=switch A=set]",
             (unsigned)(res_page + 1), (unsigned)total_pages,
             res_total);
     VDP_drawText(line, 1, PAGE_ROW);
 }
 
-static void draw_replace_prompt(void)
-{
-    char line[42];
-    const char *s0 = ticker_get_user_sym(0);
-    const char *s1 = ticker_get_user_sym(1);
-
-    VDP_setTextPalette(PAL1);
-    VDP_drawText("Both slots full — choose slot to replace:", 0, RES_ROW0);
-    VDP_setTextPalette(replace_sel == 0 ? PAL1 : PAL0);
-    sprintf(line, " %c Slot 7: %-6s -> %s",
-            replace_sel == 0 ? '>' : ' ', s0, replace_sym);
-    VDP_drawText(line, 0, RES_ROW0 + 2);
-    VDP_setTextPalette(replace_sel == 1 ? PAL1 : PAL0);
-    sprintf(line, " %c Slot 8: %-6s -> %s",
-            replace_sel == 1 ? '>' : ' ', s1, replace_sym);
-    VDP_drawText(line, 0, RES_ROW0 + 3);
-    VDP_setTextPalette(PAL0);
-    VDP_drawText("[UP/DOWN=choose  A=confirm  B=cancel]   ", 0, RES_ROW0 + 5);
-}
-
 static void draw_hint(void)
 {
     VDP_setTextPalette(PAL0);
-    VDP_drawText("KB:A=type B=del C=results | RES:A=add B/C=kb",
+    VDP_drawText("KB:A=type B=del C=results | RES:A=set B/C=kb",
                  0, HINT_ROW);
 }
 
 static void draw_popup(void)
 {
+    char header[42];
     clear_rows(POP_TOP, POP_BOT);
+    sprintf(header, "--[ TICKER SEARCH: slot %u ]--- START=close--",
+            (unsigned)(ts_target_slot + 1));
     VDP_setTextPalette(PAL1);
-    VDP_drawText("--[ TICKER SEARCH ]----- START=close ----", 0, POP_TOP);
+    VDP_drawText(header, 0, POP_TOP);
     VDP_setTextPalette(PAL0);
     VDP_drawText("-----------------------------------------", 0, SEP1_ROW);
     VDP_drawText("-----------------------------------------", 0, SEP2_ROW);
@@ -294,7 +274,7 @@ static void kb_backspace(void)
     draw_results();
 }
 
-static void add_ticker_at(u32 idx)
+static void set_ticker_at(u32 idx)
 {
     char sym[8];
     u8   j;
@@ -306,29 +286,24 @@ static void add_ticker_at(u32 idx)
     for (j = SYM_LEN; j > 0 && sym[j - 1] == '\0'; j--)
         sym[j - 1] = '\0';
 
-    /* reject duplicates — don't add a ticker already in the list */
+    /* reject duplicates that aren't the current slot's own symbol */
     if (ticker_is_duplicate(sym)) {
-        draw_search_box();   /* redraw so any stale message clears */
-        draw_results();
-        return;
-    }
-
-    if (user_slots_used >= 2) {
-        /* both slots full — ask which to overwrite */
+        const char *cur = ticker_get_slot_sym(ts_target_slot);
+        /* allow replacing with the same symbol (no-op effectively) */
         u8 k;
-        for (k = 0; k <= SYM_LEN; k++) replace_sym[k] = sym[k];
-        replace_sel = 0;
-        ts_mode = MODE_REPLACE;
-        /* clear the results area and show the replace prompt */
-        u8 r;
-        for (r = RES_ROW0; r <= PAGE_ROW + 2; r++)
-            VDP_drawText("                                        ", 0, r);
-        draw_replace_prompt();
-        return;
+        bool same = true;
+        for (k = 0; k <= SYM_LEN; k++) {
+            if (sym[k] != cur[k]) { same = false; break; }
+        }
+        if (!same) {
+            /* already owned in a different slot — just refresh */
+            draw_search_box();
+            draw_results();
+            return;
+        }
     }
 
-    ticker_add_user(user_slots_used, sym);
-    user_slots_used++;
+    ticker_set_slot(ts_target_slot, sym);
     ticker_search_close();
 }
 
@@ -343,8 +318,8 @@ static void kb_select(void)
             draw_search_box();
             draw_results();
             break;
-        case 2:                                /* ADD — adds first result */
-            if (res_total > 0) add_ticker_at(res_first);
+        case 2:                                /* ADD — sets first result */
+            if (res_total > 0) set_ticker_at(res_first);
             break;
         }
     } else {
@@ -416,10 +391,10 @@ static void res_page_move(s8 d)
 static void res_add(void)
 {
     u32 idx;
-    if (res_total == 0 || user_slots_used >= 2) return;
+    if (res_total == 0) return;
     idx = res_first + (u32)res_page * N_RESULTS + res_sel;
     if (idx >= res_first + res_total) return;
-    add_ticker_at(idx);
+    set_ticker_at(idx);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
@@ -428,7 +403,7 @@ void ticker_search_init(ts_redraw_fn redraw_fn)
     total_records   = (u32)(nasdaq_tickers_end - nasdaq_tickers_start) / REC_SIZE;
     ts_redraw_cb    = redraw_fn;
     ts_active       = false;
-    user_slots_used = 0;
+    ts_target_slot  = 0;
 }
 
 bool ticker_search_active(void) { return ts_active; }
@@ -440,9 +415,9 @@ void ticker_search_close(void)
     if (ts_redraw_cb) ts_redraw_cb();
 }
 
-static void ticker_search_open(void)
+void ticker_search_open(u8 slot)
 {
-    /* always allow open — if both slots full we replace slot 1 */
+    ts_target_slot = slot;
     slen   = 0; sbuf[0] = '\0';
     kb_r   = 1; kb_c = 0;              /* start on Q   */
     kb_sp  = false; sp_r = 0;
@@ -454,29 +429,9 @@ static void ticker_search_open(void)
 
 void ticker_search_frame(u16 press)
 {
-    if (!ts_active) {
-        if (press & BUTTON_START) ticker_search_open();
-        return;
-    }
+    if (!ts_active) return;
 
     if (press & BUTTON_START) { ticker_search_close(); return; }
-
-    if (ts_mode == MODE_REPLACE) {
-        if (press & BUTTON_UP || press & BUTTON_DOWN) {
-            replace_sel ^= 1;
-            draw_replace_prompt();
-        } else if (press & BUTTON_A) {
-            ticker_add_user(replace_sel, replace_sym);
-            /* user_slots_used stays at 2 */
-            ticker_search_close();
-        } else if (press & BUTTON_B) {
-            /* cancel replace — go back to results */
-            ts_mode = MODE_RESULTS;
-            draw_results();
-            draw_keyboard();
-        }
-        return;
-    }
 
     if (ts_mode == MODE_KB) {
         if      (press & BUTTON_UP)    kb_move_row(-1);
