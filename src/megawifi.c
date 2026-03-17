@@ -784,7 +784,7 @@ enum mw_err mw_sock_conn_wait(uint8_t ch, int16_t tout_frames)
 		}
 		// Sleep for MW_STAT_POLL_TOUT frames
 		TSK_superPend(MW_STAT_POLL_TOUT);
-		tout_frames -= MW_STAT_POLL_MS;
+		tout_frames -= MW_STAT_POLL_TOUT;
 	}
 
 	return MW_ERR_NOT_READY;
